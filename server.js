@@ -31,10 +31,16 @@ const birthdayAnnouncementTemplate = require("./template/birthdayAnnouncementTem
 const anniversaryTemplate = require("./template/anniversaryTemplate");
 const anniversaryAnnouncementTemplate = require("./template/anniversaryAnnouncementTemplate");
 const Feedback = require("./models/FeedbackSchema");
+const Resignation = require("./models/ResignationSchema");
+const ticketRoutes = require("./routes/ticketRoutes");
 
 // ✅ Import Cloudinary config (convert import → require)
 const { v2: cloudinary } = require("cloudinary");
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
+
+const Interview = require("./models/InterviewSchema");
+const resumeUpload = require("./authMiddleware/resumeUpload");
+require("./cron/interviewStatusCron");
 dotenv.config();
 
 const app = express();
@@ -62,7 +68,15 @@ cloudinary.config({
 //   credentials: true, // if sending cookies
 // }));
 
-const allowedOrigins = ["https://cws-ems-tms.vercel.app", "http://localhost:5173"];
+/* ================= FILE UPLOAD ================= */
+const uploadPath = path.join(__dirname, "uploads");
+app.use("/uploads", express.static(uploadPath));
+app.use("/uploads", express.static("uploads"));
+
+const allowedOrigins = [
+  "https://cws-ems-tms.vercel.app",
+  "http://localhost:5173",
+];
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -73,7 +87,7 @@ app.use((req, res, next) => {
 
   res.header(
     "Access-Control-Allow-Methods",
-    "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   );
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.header("Access-Control-Allow-Credentials", "true");
@@ -98,7 +112,8 @@ app.use("/api/polls", require("./routes/pollRoutes"));
 app.use("/api/gallery", galleryRoutes);
 app.use("/api/jobs", require("./routes/jobRoutes"));
 app.use("/api/apply", require("./routes/applicationRoutes"));
-
+app.use("/api/tasklogs", require("./routes/taskWorkLogRoutes"));
+app.use("/api/tickets", ticketRoutes);
 //db connection
 connectDB();
 
@@ -320,7 +335,7 @@ app.post(
       const lastDay = new Date(
         endDate.getFullYear(),
         endDate.getMonth() + 1,
-        0
+        0,
       ).getDate();
       endDate.setDate(Math.min(day, lastDay));
 
@@ -383,7 +398,7 @@ app.post(
         newEmployee._id
       }/${encodeURIComponent(token)}`;
 
-      const setPasswordHtml = await setPasslwordTemplate(verifyLink);
+      const setPasswordHtml = await setPasswordTemplate(verifyLink);
       // Send email safely
       try {
         await transporter.sendMail({
@@ -403,7 +418,7 @@ app.post(
       console.error("Add employee error:", err);
       res.status(500).json({ error: "Server Error" });
     }
-  }
+  },
 );
 
 //verify email by using id
@@ -575,12 +590,12 @@ app.post("/login", async (req, res) => {
     const accessToken = jwt.sign(
       { _id: user._id, role: user.role },
       JWT_SECRET,
-      { expiresIn: "1d" }
+      { expiresIn: "1d" },
     );
     const refreshToken = jwt.sign(
       { _id: user._id, role: user.role },
       JWT_REFRESH_SECRET,
-      { expiresIn: "7d" }
+      { expiresIn: "7d" },
     );
 
     user.refreshToken = refreshToken;
@@ -635,7 +650,7 @@ app.post("/refresh-token", async (req, res) => {
       const newAccessToken = jwt.sign(
         { _id: user._id, role: user.role },
         JWT_SECRET,
-        { expiresIn: "1d" }
+        { expiresIn: "1d" },
       );
 
       res.json({ accessToken: newAccessToken });
@@ -693,7 +708,7 @@ app.get("/employees/manager/:managerId", async (req, res) => {
 
     const employees = await User.find(
       { reportingManager: managerId }, // filter employees
-      { name: 1, designation: 1 } // return name + _id (default)
+      { name: 1, designation: 1 }, // return name + _id (default)
     );
 
     res.status(200).json({
@@ -724,7 +739,7 @@ app.get("/managers/:managerId/assigned-employees", async (req, res) => {
         contact: 1,
         department: 1,
         doj: 1,
-      }
+      },
     ).sort({ name: 1 });
 
     res.status(200).json({
@@ -756,7 +771,7 @@ app.get("/employees/teams", async (req, res) => {
         contact: 1,
         reportingManager: 1,
         _id: 0, // ❌ hide _id
-      }
+      },
     )
       .populate("reportingManager", "name")
       .sort({ name: 1 });
@@ -829,7 +844,7 @@ app.put(
               employee[nested] = { ...employee[nested], ...obj };
             } catch {}
           }
-        }
+        },
       );
 
       // ✅ Update file fields from Cloudinary
@@ -864,7 +879,7 @@ app.put(
       console.error("Error updating employee:", err);
       res.status(500).json({ error: "Server error" });
     }
-  }
+  },
 );
 
 app.post("/logout", async (req, res) => {
@@ -916,7 +931,7 @@ app.post("/sendpasswordlink", async (req, res) => {
     const setusertoken = await User.findByIdAndUpdate(
       { _id: userfind._id },
       { verifytoken: token },
-      { new: true }
+      { new: true },
     );
     //console.log("setusertoken",setusertoken)
     const forLink = `https://cws-ems-tms.vercel.app/forgotpassword/${userfind._id}/${setusertoken.verifytoken}`;
@@ -976,7 +991,7 @@ app.post("/forgotpassword/:id/:token", async (req, res) => {
       const newPassword = await bcrypt.hash(password, 10);
       const setnewuserpass = await User.findByIdAndUpdate(
         { _id: id },
-        { password: newPassword }
+        { password: newPassword },
       );
       setnewuserpass.save();
       res.status(201).json({ status: 201, setnewuserpass });
@@ -1019,6 +1034,26 @@ app.get("/getAllEmployees", authenticate, async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+app.get("/getEmployeeCount", async (req, res) => {
+  try {
+    const allowedRoles = ["hr", "manager", "employee", "it_support"];
+
+    const employees = await User.find({
+      isDeleted: false,
+      $expr: {
+        $in: [
+          { $toLower: "$role" }, // normalize DB role to lowercase
+          allowedRoles, // compare to normalized list
+        ],
+      },
+    }).select("_id");
+
+    return res.json({ totalEmployees: employees.length });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
 
 // DELETE EMPLOYEE API (Soft Delete)
 app.delete("/soft/deleteEmployee/:id", authenticate, async (req, res) => {
@@ -1042,7 +1077,7 @@ app.delete("/soft/deleteEmployee/:id", authenticate, async (req, res) => {
     const deletedEmployee = await User.findByIdAndUpdate(
       employeeId,
       { isDeleted: true },
-      { new: true }
+      { new: true },
     );
 
     if (!deletedEmployee) {
@@ -1172,7 +1207,7 @@ app.post("/admin/office-location", async (req, res) => {
       office = await OfficeLocation.findByIdAndUpdate(
         _id,
         { name, lat, lng, address },
-        { new: true }
+        { new: true },
       );
     } else {
       // ✅ Create new if none exists
@@ -1391,7 +1426,7 @@ app.post("/attendance/:id/checkin", authenticate, async (req, res) => {
         lat,
         lng,
         office.lat,
-        office.lng
+        office.lng,
       );
       if (distance > 100)
         return res.status(400).json({ message: "You are not in the office" });
@@ -1708,7 +1743,7 @@ app.delete("/leave/reset-all", async (req, res) => {
           casualLeaveBalance: 0,
           lastYearlyLeaveGranted: null,
         },
-      }
+      },
     );
 
     res.json({
@@ -1773,7 +1808,7 @@ app.get("/leave/balance", async (req, res) => {
 app.get("/leave/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select(
-      "name sickLeaveBalance casualLeaveBalance"
+      "name sickLeaveBalance casualLeaveBalance",
     );
     if (!user) return res.status(404).json({ message: "Employee not found" });
     res.json(user);
@@ -1791,7 +1826,7 @@ app.get("/users/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).populate(
       "reportingManager",
-      "name employeeId contact designation role image"
+      "name employeeId contact designation role image",
     ); // populate manager
 
     if (!user) return res.status(404).json({ error: "User not found" });
@@ -1939,7 +1974,7 @@ app.post("/leave/apply", async (req, res) => {
         user: reportingManagerId,
         type: "Leave",
         message: `New leave request from ${employee.name} (${new Date(
-          dateFrom
+          dateFrom,
         ).toDateString()} - ${new Date(dateTo).toDateString()})`,
         leaveRef: leave._id,
       });
@@ -1954,7 +1989,7 @@ app.post("/leave/apply", async (req, res) => {
         user: admin._id,
         type: "Leave",
         message: `New leave request from ${employee.name} (${new Date(
-          dateFrom
+          dateFrom,
         ).toDateString()} - ${new Date(dateTo).toDateString()})`,
         leaveRef: leave._id,
       });
@@ -1973,6 +2008,7 @@ app.get("/notifications/:userId", async (req, res) => {
     const notifications = await Notification.find({ user: req.params.userId })
       .populate("leaveRef", "leaveType dateFrom dateTo status")
       .populate("regularizationRef", "date regularizationRequest.status")
+      .populate("ticketRef", "ticketId category priority status")
       // .populate("eventRef", "name date description")
       .sort({ createdAt: -1 });
 
@@ -1989,7 +2025,7 @@ app.put("/notifications/:id/read", async (req, res) => {
     const notification = await Notification.findByIdAndUpdate(
       req.params.id,
       { isRead: true },
-      { new: true }
+      { new: true },
     );
     res.json(notification);
   } catch (err) {
@@ -2334,10 +2370,10 @@ const getSandwichDays = async (start, end) => {
     const day = current.getDay();
     const isSunday = day === 0;
     const isNthSaturday = weeklyOffData?.saturdays?.includes(
-      Math.ceil(current.getDate() / 7)
+      Math.ceil(current.getDate() / 7),
     );
     const isHoliday = weeklyOffData?.holidays?.some(
-      (h) => new Date(h.date).toDateString() === current.toDateString()
+      (h) => new Date(h.date).toDateString() === current.toDateString(),
     );
 
     if (isSunday || isNthSaturday || isHoliday) {
@@ -2413,7 +2449,7 @@ app.put("/leave/:leaveId/status", async (req, res) => {
               isSandwich: false,
             },
           },
-          { upsert: true }
+          { upsert: true },
         );
         current.setDate(current.getDate() + 1);
       }
@@ -2430,7 +2466,7 @@ app.put("/leave/:leaveId/status", async (req, res) => {
               isSandwich: true,
             },
           },
-          { upsert: true }
+          { upsert: true },
         );
       }
 
@@ -2450,9 +2486,9 @@ app.put("/leave/:leaveId/status", async (req, res) => {
       user: employee._id,
       type: "Leave",
       message: `Your leave request (${new Date(
-        leave.dateFrom
+        leave.dateFrom,
       ).toDateString()} - ${new Date(
-        leave.dateTo
+        leave.dateTo,
       ).toDateString()}) has been ${status}.`,
       leaveRef: leave._id,
     });
@@ -2466,9 +2502,9 @@ app.put("/leave/:leaveId/status", async (req, res) => {
         user: admin._id,
         type: "Leave",
         message: `${employee.name}'s leave request (${new Date(
-          leave.dateFrom
+          leave.dateFrom,
         ).toDateString()} - ${new Date(
-          leave.dateTo
+          leave.dateTo,
         ).toDateString()}) has been ${status} by ${role}.`,
         leaveRef: leave._id,
       });
@@ -3086,7 +3122,7 @@ app.post("/attendance/regularization/apply", async (req, res) => {
           },
         },
       },
-      { new: true, upsert: true }
+      { new: true, upsert: true },
     );
 
     // Notify manager + admins
@@ -3327,7 +3363,7 @@ app.put(
       console.error("Update regularization error:", err);
       res.status(500).json({ message: "Server error" });
     }
-  }
+  },
 );
 
 // DELETE regularization request=admin can delete
@@ -3378,7 +3414,7 @@ app.post("/addEvent", async (req, res) => {
       user: user._id,
       type: "Event",
       message: `New event "${name}" scheduled on ${new Date(
-        date
+        date,
       ).toDateString()}`,
       eventRef: event._id,
     }));
@@ -3419,7 +3455,7 @@ app.get("/events-for-employee", authenticate, async (req, res) => {
         let nextBirthday = new Date(
           today.getFullYear(),
           dob.getMonth(),
-          dob.getDate()
+          dob.getDate(),
         );
         if (nextBirthday < today)
           nextBirthday.setFullYear(today.getFullYear() + 1);
@@ -3428,7 +3464,7 @@ app.get("/events-for-employee", authenticate, async (req, res) => {
         let nextAnniversary = new Date(
           today.getFullYear(),
           doj.getMonth(),
-          doj.getDate()
+          doj.getDate(),
         );
         if (nextAnniversary < today)
           nextAnniversary.setFullYear(today.getFullYear() + 1);
@@ -3442,7 +3478,7 @@ app.get("/events-for-employee", authenticate, async (req, res) => {
 
     // Custom events from Event collection
     const customEvents = await Event.find({}, "name date description _id").sort(
-      { date: 1 }
+      { date: 1 },
     );
     const mappedCustomEvents = customEvents.map((ev) => ({
       _id: ev._id,
@@ -3454,7 +3490,7 @@ app.get("/events-for-employee", authenticate, async (req, res) => {
 
     // Combine all events and sort by date
     const allEvents = [...employeeEvents, ...mappedCustomEvents].sort(
-      (a, b) => a.date - b.date
+      (a, b) => a.date - b.date,
     );
 
     res.json(allEvents);
@@ -3469,7 +3505,7 @@ app.get("/events-for-employee", authenticate, async (req, res) => {
 app.get("/managers", async (req, res) => {
   try {
     const managers = await User.find({ role: "manager" }).select(
-      "_id name email designation profile department"
+      "_id name email designation profile department",
     );
     res.status(200).json(managers);
   } catch (err) {
@@ -3548,7 +3584,7 @@ app.put("/users/:employeeId/assign-manager", async (req, res) => {
     // fetch employee with populated manager info
     const employee = await User.findById(employeeId).populate(
       "reportingManager",
-      "_id name email contact designation role department image employeeId"
+      "_id name email contact designation role department image employeeId",
     );
 
     res
@@ -3567,7 +3603,7 @@ app.get("/getAllEmployeeAndTheirManager", async (req, res) => {
         name: 1,
         employeeId: 1,
         reportingManager: 1,
-      }
+      },
     ).populate("reportingManager", "name email designation employeeId");
     // Populate only selected fields
 
@@ -3588,7 +3624,7 @@ app.get("/employees/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).populate(
       "reportingManager",
-      "_id name email contact designation role department image employeeId"
+      "_id name email contact designation role department image employeeId",
     );
 
     if (!user) return res.status(404).json({ error: "User not found" });
@@ -3602,7 +3638,7 @@ app.get("/employees/name/:name", async (req, res) => {
   try {
     const user = await User.findOne({ name: req.params.name }).populate(
       "reportingManager",
-      "_id name email contact designation role department image employeeId"
+      "_id name email contact designation role department image employeeId",
     );
 
     if (!user) return res.status(404).json({ error: "User not found" });
@@ -3659,6 +3695,22 @@ app.post("/holidays", async (req, res) => {
     console.log(req.body);
     const holiday = new Holiday({ name, date, description });
     await holiday.save();
+
+    // notification code added by rutuja
+    const users = await User.find({});
+
+    const notifications = users.map((user) => ({
+      user: user._id,
+      type: "Holiday",
+      message: `New Holiday "${name}" scheduled on ${new Date(
+        date,
+      ).toDateString()}`,
+      holidayRef: holiday._id,
+    }));
+
+    await Notification.insertMany(notifications);
+    // end
+
     res.status(201).json(holiday);
   } catch (err) {
     res.status(500).json({ error: "Failed to create holiday" });
@@ -3726,7 +3778,7 @@ app.post("/admin/weeklyoff", async (req, res) => {
     const updated = await WeeklyOff.findOneAndUpdate(
       { year },
       { saturdays },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     );
 
     res.status(201).json({
@@ -3798,7 +3850,7 @@ app.get("/getEmployee/:id", async (req, res) => {
   try {
     const employee = await User.findById(req.params.id).populate(
       "reportingManager",
-      "name email designation"
+      "name email designation",
     );
     if (!employee)
       return res.status(404).json({ message: "Employee not found" });
@@ -3891,7 +3943,7 @@ app.delete("/employees/:id/image", async (req, res) => {
           console.warn(
             "Cloudinary deletion failed for",
             publicId,
-            err.message || err
+            err.message || err,
           );
           // We do not abort — still remove DB reference below
         }
@@ -3944,7 +3996,7 @@ app.delete("/deleteleave/leave/:id", async (req, res) => {
 
     // delete the leave
     const deleteRes = await Leave.deleteOne({ _id: leave._id }).session(
-      session
+      session,
     );
     console.log("delete", deleteRes);
 
@@ -3957,9 +4009,8 @@ app.delete("/deleteleave/leave/:id", async (req, res) => {
     })();
     console.log("notifFilter", notifFilter);
 
-    const notifRes = await Notification.deleteMany(notifFilter).session(
-      session
-    );
+    const notifRes =
+      await Notification.deleteMany(notifFilter).session(session);
     console.log("delete notification:", notifRes);
     await session.commitTransaction();
     session.endSession();
@@ -4032,7 +4083,7 @@ app.get("/attendance/manager/:managerId/today", async (req, res) => {
 
     const employees = await User.find(
       { reportingManager: managerId },
-      "_id name email department role employeeId reportingManager"
+      "_id name email department role employeeId reportingManager",
     );
 
     if (!employees.length) {
@@ -4242,7 +4293,7 @@ app.post(
       console.error("CREATE TASK ERROR:", error);
       return res.status(400).json({ message: error.message });
     }
-  }
+  },
 );
 
 app.put(
@@ -4378,7 +4429,7 @@ app.put(
       ) {
         try {
           const employeeExists = await User.findById(
-            updatedTask.assignedTo._id
+            updatedTask.assignedTo._id,
           );
 
           if (employeeExists) {
@@ -4415,7 +4466,7 @@ app.put(
               message: adminMessage,
               taskRef: updatedTask._id,
               isRead: false,
-            })
+            }),
           );
 
           await Promise.all(notificationPromises);
@@ -4432,7 +4483,7 @@ app.put(
       console.error("UPDATE TASK ERROR:", error);
       return res.status(400).json({ message: error.message });
     }
-  }
+  },
 );
 
 app.get("/task/getall", async (req, res) => {
@@ -4556,7 +4607,7 @@ app.post("/task/:taskId/comment", async (req, res) => {
           },
         },
       },
-      { new: true }
+      { new: true },
     );
 
     if (!task) {
@@ -4607,7 +4658,7 @@ app.get("/task/:taskId/comments", async (req, res) => {
 
     const sortedComments = task.comments
       ? task.comments.sort(
-          (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+          (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
         )
       : [];
 
@@ -4912,7 +4963,7 @@ app.put("/tasknotifications/:id/read", async (req, res) => {
     const notification = await TaskNotification.findByIdAndUpdate(
       req.params.id,
       { isRead: true },
-      { new: true }
+      { new: true },
     );
     if (!notification) {
       return res.status(404).json({
@@ -4961,7 +5012,7 @@ app.get("/task-notifications/:userId", async (req, res) => {
       .populate("user", "name email employeeId role department")
       .populate(
         "taskRef",
-        "taskName projectName status dateOfTaskAssignment dateOfExpectedCompletion"
+        "taskName projectName status dateOfTaskAssignment dateOfExpectedCompletion",
       )
       .populate("projectRef", "name description")
       .sort({ createdAt: -1 });
@@ -4979,7 +5030,7 @@ app.get("/managers/list", async (req, res) => {
   try {
     const managers = await User.find(
       { role: "manager", isDeleted: { $ne: true } },
-      "_id name email employeeId"
+      "_id name email employeeId",
     ).sort({ name: 1 });
 
     res.status(200).json(managers);
@@ -5043,7 +5094,7 @@ app.put("/task/:taskId/status", async (req, res) => {
     const updatedTask = await Task.findByIdAndUpdate(
       taskId,
       { status },
-      { new: true }
+      { new: true },
     )
       .populate("assignedTo", "name reportingManager")
       .populate("status");
@@ -5081,7 +5132,7 @@ app.get("/employees/manager/:managerId/team-status", async (req, res) => {
     // 1️⃣ Employees under manager
     const employees = await User.find(
       { reportingManager: managerId },
-      { name: 1, email: 1 }
+      { name: 1, email: 1 },
     );
 
     if (!employees.length) {
@@ -5132,28 +5183,119 @@ app.get("/employees/manager/:managerId/team-status", async (req, res) => {
   }
 });
 //Show Employee Assigned Project
+// app.get("/projects/employee/:employeeId", async (req, res) => {
+//   try {
+//     const { employeeId } = req.params;
+//     // assign by Admin
+//     const adminProjects = await Project.find({
+//       assignedEmployees: employeeId,
+//     })
+//       .populate("status", "name")
+//       .populate("managers", "name email employeeId designation department")
+//       .populate(
+//         "assignedEmployees",
+//         "name email employeeId designation department"
+//       )
+//       .sort({ createdAt: -1 });
+
+//     // assign by manager
+//     const teamAssignments = await Team.find({
+//       assignToProject: employeeId,
+//     }).populate({
+//       path: "project",
+//       populate: [
+//         { path: "status", select: "name" },
+//         {
+//           path: "managers",
+//           select: "name email employeeId designation department",
+//         },
+//         {
+//           path: "assignedEmployees",
+//           select: "name email employeeId designation department",
+//         },
+//       ],
+//     });
+
+//     const teamProjects = teamAssignments
+//       .map((team) => team.project)
+//       .filter((project) => project !== null);
+
+//     const allProjects = [...adminProjects, ...teamProjects];
+//     const uniqueProjects = [];
+//     const seenIds = new Set();
+
+//     allProjects.forEach((project) => {
+//       if (project && !seenIds.has(project._id.toString())) {
+//         seenIds.add(project._id.toString());
+//         uniqueProjects.push(project);
+//       }
+//     });
+
+//     res.status(200).json({
+//       success: true,
+//       count: uniqueProjects.length,
+//       projects: uniqueProjects,
+//     });
+//   } catch (error) {
+//     console.error("Error:", error);
+//     res.status(500).json({
+//       message: "Server error",
+//     });
+//   }
+// });
+// // get employees assigned to a project
+// app.get("/projects/employees/:projectId", async (req, res) => {
+//   try {
+//     const { projectId } = req.params;
+
+//     const team = await Team.findOne({ project: projectId })
+//       .populate("assignToProject", "_id name email department")
+//       .select("assignToProject");
+
+//     if (!team) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "No team assigned to this project",
+//       });
+//     }
+
+//     return res.status(200).json({
+//       success: true,
+//       count: team.assignToProject.length,
+//       data: team.assignToProject || [],
+//     });
+//   } catch (error) {
+//     console.error("GET PROJECT EMPLOYEES ERROR:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: error.message,
+//     });
+//   }
+// });
+//Komal
+
+// komal's code
+
 app.get("/projects/employee/:employeeId", async (req, res) => {
   try {
     const { employeeId } = req.params;
-    // assign by Admin
+
+    // 1️⃣ Assigned by Admin
     const adminProjects = await Project.find({
       assignedEmployees: employeeId,
     })
-      .populate("status", "name")
       .populate("managers", "name email employeeId designation department")
       .populate(
         "assignedEmployees",
-        "name email employeeId designation department"
-      )
-      .sort({ createdAt: -1 });
+        "name email employeeId designation department",
+      );
 
-    // assign by manager
+    // 2️⃣ Assigned by Manager
     const teamAssignments = await Team.find({
       assignToProject: employeeId,
     }).populate({
       path: "project",
       populate: [
-        { path: "status", select: "name" },
         {
           path: "managers",
           select: "name email employeeId designation department",
@@ -5165,34 +5307,102 @@ app.get("/projects/employee/:employeeId", async (req, res) => {
       ],
     });
 
-    const teamProjects = teamAssignments
-      .map((team) => team.project)
-      .filter((project) => project !== null);
+    const teamProjects = teamAssignments.map((t) => t.project).filter(Boolean);
 
-    const allProjects = [...adminProjects, ...teamProjects];
-    const uniqueProjects = [];
-    const seenIds = new Set();
+    // 3️⃣ Manager projects
+    const managerProjects = await Project.find({
+      managers: employeeId,
+    })
+      .populate("managers", "name email employeeId designation department")
+      .populate(
+        "assignedEmployees",
+        "name email employeeId designation department",
+      );
 
-    allProjects.forEach((project) => {
-      if (project && !seenIds.has(project._id.toString())) {
-        seenIds.add(project._id.toString());
-        uniqueProjects.push(project);
-      }
+    // 4️⃣ Merge + remove duplicates
+    const projectMap = new Map();
+
+    [...adminProjects, ...teamProjects, ...managerProjects].forEach((p) => {
+      projectMap.set(p._id.toString(), p);
     });
 
-    res.status(200).json({
+    // 5️⃣ Frontend-ready response
+    // const projects = Array.from(projectMap.values()).map(project => {
+    //   const isManager = project.managers.some(
+    //     m => m._id.toString() === employeeId
+    //   );
+
+    //   return {
+    //     _id: project._id,
+    //     projectCode: project.projectCode,
+    //     name: project.name,
+    //     clientName: project.clientName,
+    //     startDate: project.startDate,
+    //     endDate: project.endDate,
+    //     dueDate: project.dueDate,
+    //     priority: project.priority,
+    //     progress: project.progressPercentage || 0,
+
+    //     myRole: isManager ? "Project Manager" : "Team Member",
+
+    //     // ✅ STATUS WITHOUT POPULATE
+    //     status:
+    //       project.derivedStatus ||
+    //       project.manualStatus ||
+    //       "In Progress",
+
+    //     managers: project.managers.map(m => m.name)
+    //   };
+    // });
+
+    const projects = Array.from(projectMap.values()).map((project) => {
+      const isManager = project.managers.some(
+        (m) => m._id.toString() === employeeId,
+      );
+
+      return {
+        _id: project._id,
+        projectCode: project.projectCode,
+        name: project.name,
+        clientName: project.clientName,
+        startDate: project.startDate,
+        endDate: project.endDate,
+        dueDate: project.dueDate,
+        priority: project.priority,
+        progress: project.progressPercentage || 0,
+
+        myRole: isManager ? "Project Manager" : "Team Member",
+
+        // ✅ SINGLE SOURCE OF TRUTH
+        status: project.status,
+
+        // optional (who updated manually)
+        manualStatusInfo: project.manualStatus
+          ? {
+              status: project.manualStatus,
+              updatedAt: project.manualStatusUpdatedAt,
+              updatedBy: project.manualStatusUpdatedBy?.name || null,
+            }
+          : null,
+
+        managers: project.managers.map((m) => m.name),
+      };
+    });
+
+    return res.status(200).json({
       success: true,
-      count: uniqueProjects.length,
-      projects: uniqueProjects,
+      count: projects.length,
+      projects,
     });
   } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({
+    console.error("EMPLOYEE PROJECT ERROR:", error);
+    return res.status(500).json({
+      success: false,
       message: "Server error",
     });
   }
 });
-// get employees assigned to a project
+
 app.get("/projects/employees/:projectId", async (req, res) => {
   try {
     const { projectId } = req.params;
@@ -5211,10 +5421,37 @@ app.get("/projects/employees/:projectId", async (req, res) => {
     return res.status(200).json({
       success: true,
       count: team.assignToProject.length,
-      data: team.assignToProject || [],
+      data: team.assignToProject,
     });
   } catch (error) {
-    console.error("GET PROJECT EMPLOYEES ERROR:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+app.get("/projects/employees/:projectId", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+
+    const team = await Team.findOne({ project: projectId })
+      .populate("assignToProject", "_id name email department")
+      .select("assignToProject");
+
+    if (!team) {
+      return res.status(404).json({
+        success: false,
+        message: "No team assigned to this project",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      count: team.assignToProject.length,
+      data: team.assignToProject,
+    });
+  } catch (error) {
     return res.status(500).json({
       success: false,
       message: error.message,
@@ -5287,7 +5524,7 @@ app.post("/api/break/end", authenticate, async (req, res) => {
     activeBreak.endTime = new Date();
 
     const diffSeconds = Math.floor(
-      (activeBreak.endTime - activeBreak.startTime) / 1000
+      (activeBreak.endTime - activeBreak.startTime) / 1000,
     );
 
     activeBreak.durationSeconds = diffSeconds;
@@ -5539,7 +5776,7 @@ async function autoSendBirthdayEmail(user) {
     });
 
     console.log(
-      `Sending birthday announcement to ${allEmployees.length} employees...`
+      `Sending birthday announcement to ${allEmployees.length} employees...`,
     );
 
     const announcementHtml = await birthdayAnnouncementTemplate(user.name);
@@ -5560,7 +5797,7 @@ async function autoSendBirthdayEmail(user) {
     }
 
     console.log(
-      ` Birthday announcements sent to all ${allEmployees.length} employees!`
+      ` Birthday announcements sent to all ${allEmployees.length} employees!`,
     );
   } catch (err) {
     console.error(" Error sending birthday announcements:", err.message);
@@ -5683,7 +5920,7 @@ app.patch("/test-set-anniversary/:userId", async (req, res) => {
         doj: testDoj,
         lastAnniversaryEmail: null,
       },
-      { new: true }
+      { new: true },
     );
 
     if (!user) {
@@ -5735,7 +5972,7 @@ app.post("/test-anniversary/:userId", async (req, res) => {
         error: "Today is not this user's anniversary",
         message: `${user.name}'s anniversary is on ${doj.toLocaleDateString(
           "en-US",
-          { month: "long", day: "numeric" }
+          { month: "long", day: "numeric" },
         )}, but today is ${today.toLocaleDateString("en-US", {
           month: "long",
           day: "numeric",
@@ -5753,7 +5990,7 @@ app.post("/test-anniversary/:userId", async (req, res) => {
     }
 
     console.log(
-      ` Testing anniversary email for: ${user.name} (${years} years)`
+      ` Testing anniversary email for: ${user.name} (${years} years)`,
     );
 
     await autoSendAnniversaryEmail(user);
@@ -5831,12 +6068,12 @@ async function autoSendAnniversaryEmail(user) {
     });
 
     console.log(
-      ` Sending anniversary announcement to ${allEmployees.length} employees...`
+      ` Sending anniversary announcement to ${allEmployees.length} employees...`,
     );
 
     const announcementHtml = await anniversaryAnnouncementTemplate(
       user.name,
-      years
+      years,
     );
 
     for (const emp of allEmployees) {
@@ -5856,7 +6093,7 @@ async function autoSendAnniversaryEmail(user) {
     }
 
     console.log(
-      ` Anniversary announcements sent to all ${allEmployees.length} employees!`
+      ` Anniversary announcements sent to all ${allEmployees.length} employees!`,
     );
   } catch (err) {
     console.error(" Error sending anniversary announcements:", err.message);
@@ -5962,6 +6199,23 @@ app.get("/policy/get", async (req, res) => {
 });
 
 //HR Feedback Rutuja
+const canSendMessage = (senderRole, receiverRole) => {
+  const sender = senderRole.toLowerCase();
+  const receiver = receiverRole.toLowerCase();
+
+  if (sender === "hr") {
+    return true;
+  }
+
+  if (sender === "employee" || sender === "manager") {
+    return receiver === "hr" || receiver === "admin";
+  }
+
+  if (sender === "admin") {
+    return true;
+  }
+};
+
 app.post("/feedback/send", authenticate, async (req, res) => {
   try {
     const { receiverId, title, message } = req.body;
@@ -5984,14 +6238,35 @@ app.post("/feedback/send", authenticate, async (req, res) => {
     }
 
     if (!canSendMessage(sender.role, receiver.role)) {
-      return res.status(403).json({
+      const senderRole = sender.role.toLowerCase();
+      if (senderRole === "employee" || senderRole === "manager") {
+        return res.status(403).json({
+          success: false,
+          message: "You can only send feedback to HR",
+        });
+      } else {
+        return res.status(403).json({
+          success: false,
+          message: "You are not allowed to send feedback",
+        });
+      }
+    }
+
+    if (receiverId === req.user._id.toString()) {
+      return res.status(400).json({
         success: false,
-        message: "You can only send feedback to HR",
+        message: "You cannot send feedback to yourself",
       });
     }
 
-    const feedbackCount = await Feedback.countDocuments();
-    const feedbackId = `FED${String(feedbackCount + 1)}`;
+    const lastFeedback = await Feedback.findOne().sort({ createdAt: -1 });
+    let nextNumber = 1;
+    if (lastFeedback && lastFeedback.feedbackId) {
+      const lastIdNum =
+        parseInt(lastFeedback.feedbackId.replace("FED", "")) || 0;
+      nextNumber = lastIdNum + 1;
+    }
+    const feedbackId = `FED${nextNumber}`;
 
     const feedback = new Feedback({
       feedbackId: feedbackId,
@@ -6016,13 +6291,13 @@ app.post("/feedback/send", authenticate, async (req, res) => {
       await Notification.create({
         user: receiverId,
         type: "Feedback",
-        message: `You have received new feedback from ${sender.name}`,
+        message: `You have received new feedback from ${sender.name} (${sender.role})`,
         feedbackRef: feedback._id,
         isRead: false,
         createdAt: new Date(),
       });
     } catch (error) {
-      // console.error("Error creating notification:", error);
+      console.error("Error creating notification:", error);
     }
 
     res.status(201).json({
@@ -6092,9 +6367,23 @@ app.put("/feedback/view/:feedbackId", authenticate, async (req, res) => {
       });
     }
 
+    const receiver = await User.findById(req.user._id).select("name role");
     feedback.status = "viewed";
     feedback.readAt = new Date();
     await feedback.save();
+
+    try {
+      await Notification.create({
+        user: feedback.sender,
+        type: "Feedback Viewed",
+        message: `Your feedback to ${receiver.name}(${receiver.role})has been viewed`,
+        feedbackRef: feedback._id,
+        isRead: false,
+        createdAt: new Date(),
+      });
+    } catch (notificationError) {
+      console.error("Error creating sender notification:", notificationError);
+    }
 
     // const senderSocketId = onlineUsers.get(feedback.sender.toString());
     // if (senderSocketId) {
@@ -6183,6 +6472,7 @@ app.put("/feedback/edit/:feedbackId", authenticate, async (req, res) => {
     });
   }
 });
+
 app.get("/gethr", authenticate, async (req, res) => {
   try {
     const hrPersons = await User.find({
@@ -6196,6 +6486,85 @@ app.get("/gethr", authenticate, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.delete("/feedback/delete/:id", authenticate, async (req, res) => {
+  try {
+    const feedbackId = req.params.id;
+
+    const feedback = await Feedback.findById(feedbackId);
+
+    if (!feedback) {
+      return res.status(404).json({
+        success: false,
+        message: "Feedback not found",
+      });
+    }
+
+    if (
+      feedback.sender.toString() !== req.user._id.toString() &&
+      req.user.role !== "admin"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "Only the sender can delete feedback",
+      });
+    }
+
+    try {
+      await Notification.deleteOne({
+        feedbackRef: feedbackId,
+        type: "Feedback",
+      });
+    } catch (error) {
+      console.error("Error deleting associated notification:", error);
+    }
+
+    await Feedback.findByIdAndDelete(feedbackId);
+
+    res.status(200).json({
+      success: true,
+      message: "Feedback deleted successfully",
+      deletedFeedback: {
+        _id: feedback._id,
+        feedbackId: feedback.feedbackId,
+        title: feedback.title,
+        sender: feedback.sender,
+        receiver: feedback.receiver,
+        deletedAt: new Date(),
+      },
+    });
+  } catch (err) {
+    console.error("Delete feedback error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: err.message,
+    });
+  }
+});
+
+//get all feedback for admin view
+app.get("/feedback/all", async (req, res) => {
+  try {
+    const feedbacks = await Feedback.find()
+      .sort({ createdAt: -1 })
+      .populate("sender", "name email role designation employeeId")
+      .populate("receiver", "name email role designation employeeId");
+
+    res.status(200).json({
+      success: true,
+      count: feedbacks.length,
+      feedbacks: feedbacks,
+    });
+  } catch (err) {
+    console.error("Get all feedback error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: err.message,
+    });
   }
 });
 
@@ -6340,7 +6709,7 @@ app.get("/api/employee/:employeeId/teams", async (req, res) => {
     const teams = await Team.find({
       assignToProject: { $in: [empObjectId] },
     })
-      .populate("assignToProject", "name email") // employees
+      .populate("assignToProject", "name email designation contact") // employees
       .populate("project", "name") // project name
       .select("name project assignToProject"); // only needed fields
 
@@ -6416,7 +6785,7 @@ app.put("/api/task/:id", upload.single("documents"), async (req, res) => {
     const updatedTask = await Task.findByIdAndUpdate(
       taskId,
       { $set: updates },
-      { new: true }
+      { new: true },
     ).populate("assignedTo status");
 
     return res.status(200).json({
@@ -6430,27 +6799,6 @@ app.put("/api/task/:id", upload.single("documents"), async (req, res) => {
       success: false,
       message: "Failed to update task",
     });
-  }
-});
-
-// added jayshree
-
-// employees + managers list to get in Interview scheduling
-app.get("/allEmp", async (req, res) => {
-  try {
-    const users = await User.find(
-      { role: { $in: ["employee", "manager"] } },
-      {
-        employeeId: 1,
-        name: 1,
-        designation: 1,
-        role: 1,
-      }
-    );
-
-    res.json({ success: true, employees: users });
-  } catch (err) {
-    res.status(500).json({ success: false });
   }
 });
 
@@ -6687,14 +7035,14 @@ app.post("/task/:taskId/stop", async (req, res) => {
         duration: durationSeconds,
         hours: sessionHours,
         formatted: `${Math.floor(durationSeconds / 3600)}h ${Math.floor(
-          (durationSeconds % 3600) / 60
+          (durationSeconds % 3600) / 60,
         )}m ${durationSeconds % 60}s`,
       },
       totalTime: {
         totalSeconds: task.timeTracking.totalSeconds,
         hours: totalHours,
         formatted: `${Math.floor(
-          task.timeTracking.totalSeconds / 3600
+          task.timeTracking.totalSeconds / 3600,
         )}h ${Math.floor((task.timeTracking.totalSeconds % 3600) / 60)}m ${
           task.timeTracking.totalSeconds % 60
         }s`,
@@ -6710,6 +7058,67 @@ app.post("/task/:taskId/stop", async (req, res) => {
   }
 });
 
+// app.get("/bench-employees", authenticate, async (req, res) => {
+//   try {
+//     const role = req.user.role;
+//     const userId = req.user._id;
+
+//     let employees = [];
+
+//     if (["admin", "ceo", "hr", "coo", "md"].includes(role)) {
+//       employees = await User.find(
+//         {},
+//         {
+//           name: 1,
+//           designation: 1,
+//           department: 1,
+//           email: 1,
+//           employeeId: 1,
+//           doj: 1,
+//           contact: 1,
+//         },
+//       );
+//     } else if (role === "manager") {
+//       employees = await User.find(
+//         { reportingManager: userId },
+//         {
+//           name: 1,
+//           designation: 1,
+//           department: 1,
+//           email: 1,
+//           employeeId: 1,
+//           doj: 1,
+//           contact: 1,
+//         },
+//       );
+//     } else {
+//       return res.status(403).json({ success: false, message: "Forbidden" });
+//     }
+
+//     const teams = await Team.find({}, { assignToProject: 1 });
+
+//     const assignedEmployeeIds = new Set();
+//     teams.forEach((team) => {
+//       (team.assignToProject || []).forEach((empId) =>
+//         assignedEmployeeIds.add(empId.toString()),
+//       );
+//     });
+
+//     const benchEmployees = employees.filter(
+//       (emp) => !assignedEmployeeIds.has(emp._id.toString()),
+//     );
+
+//     res.status(200).json({
+//       success: true,
+//       count: benchEmployees.length,
+//       benchEmployees,
+//     });
+//   } catch (error) {
+//     console.error("Error fetching bench employees:", error);
+//     res.status(500).json({ success: false, message: "Server error" });
+//   }
+// });
+
 app.get("/bench-employees", authenticate, async (req, res) => {
   try {
     const role = req.user.role;
@@ -6717,9 +7126,10 @@ app.get("/bench-employees", authenticate, async (req, res) => {
 
     let employees = [];
 
+    // FOR ADMIN/HR/CEO/COO/MD → fetch all employees
     if (["admin", "ceo", "hr", "coo", "md"].includes(role)) {
       employees = await User.find(
-        {},
+        { role: ["employee", "hr", "manager"] }, // only employees added harshada
         {
           name: 1,
           designation: 1,
@@ -6728,36 +7138,46 @@ app.get("/bench-employees", authenticate, async (req, res) => {
           employeeId: 1,
           doj: 1,
           contact: 1,
-        }
+          role: 1,
+        },
       );
-    } else if (role === "manager") {
-      employees = await User.find(
-        { reportingManager: userId },
-        {
-          name: 1,
-          designation: 1,
-          department: 1,
-          email: 1,
-          employeeId: 1,
-          doj: 1,
-          contact: 1,
-        }
-      );
-    } else {
-      return res.status(403).json({ success: false, message: "Forbidden" });
     }
 
+    // FOR MANAGER → fetch reporting employees only
+    else if (role === "manager") {
+      employees = await User.find(
+        { reportingManager: userId, role: "employee" }, // only employees under manager added harshada
+        {
+          name: 1,
+          designation: 1,
+          department: 1,
+          email: 1,
+          employeeId: 1,
+          doj: 1,
+          contact: 1,
+          role: 1,
+        },
+      );
+    } else {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden",
+      });
+    }
+
+    // Fetch teams to check assignment
     const teams = await Team.find({}, { assignToProject: 1 });
 
     const assignedEmployeeIds = new Set();
     teams.forEach((team) => {
       (team.assignToProject || []).forEach((empId) =>
-        assignedEmployeeIds.add(empId.toString())
+        assignedEmployeeIds.add(empId.toString()),
       );
     });
 
+    // Filter bench employees → NOT assigned
     const benchEmployees = employees.filter(
-      (emp) => !assignedEmployeeIds.has(emp._id.toString())
+      (emp) => !assignedEmployeeIds.has(emp._id.toString()), //added harshada
     );
 
     res.status(200).json({
@@ -6767,9 +7187,811 @@ app.get("/bench-employees", authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching bench employees:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 });
+
+//Rutuja
+// get emp info
+app.get("/emp/info/:empId", async (req, res) => {
+  try {
+    const emp = await User.findOne({ employeeId: req.params.empId })
+      .select("employeeId name designation department doj")
+      .populate("reportingManager", "name");
+
+    if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+    res.json({
+      empId: emp.employeeId,
+      name: emp.name,
+      designation: emp.designation,
+      department: emp.department,
+      manager: emp.reportingManager
+        ? emp.reportingManager.name
+        : "Not assigned",
+      joiningDate: emp.doj ? emp.doj.toISOString().split("T")[0] : "N/A",
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+//emp apply resignation
+app.post("/resignation/apply", authenticate, async (req, res) => {
+  try {
+    const { reason, comments } = req.body;
+    const employeeId = req.user.employeeId;
+
+    if (!reason) {
+      return res.status(400).json({ message: "Reason is required" });
+    }
+
+    const validReasons = [
+      "Career Growth",
+      "Personal Reason",
+      "Higher Studies",
+      "Health Issue",
+      "Relocation",
+      "Other",
+    ];
+    if (!validReasons.includes(reason)) {
+      return res.status(400).json({ message: "Invalid reason" });
+    }
+
+    const emp = await User.findById(req.user._id);
+    if (!emp) {
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    const existing = await Resignation.findOne({
+      employee: emp._id,
+      status: "Pending",
+    });
+
+    if (existing) {
+      return res.status(400).json({
+        message: "Already have pending resignation",
+      });
+    }
+
+    const lastResignation = await Resignation.findOne().sort({
+      resignationId: -1,
+    });
+    let nextNumber = 1;
+
+    if (lastResignation && lastResignation.resignationId) {
+      const lastNumber = parseInt(
+        lastResignation.resignationId.replace("RES", ""),
+      );
+      nextNumber = lastNumber + 1;
+    }
+
+    const resignationId = `RES${String(nextNumber).padStart(3, "0")}`;
+
+    const resignation = new Resignation({
+      resignationId,
+      employee: emp._id,
+      reason,
+      comments: comments || "",
+    });
+
+    await resignation.save();
+
+    const admins = await User.find({
+      role: { $in: ["hr", "admin", "ceo", "coo", "md"] },
+    });
+
+    for (const admin of admins) {
+      await Notification.create({
+        user: admin._id,
+        type: "Resignation",
+        message: `${emp.name} has applied for resignation.`,
+        createdAt: new Date(),
+      });
+    }
+
+    if (emp.reportingManager) {
+      await Notification.create({
+        user: emp.reportingManager,
+        type: "Resignation",
+        message: `${emp.name} has applied for resignation.`,
+        createdAt: new Date(),
+      });
+    }
+
+    res.json({
+      message: "Resignation applied successfully",
+      resignationId: resignation.resignationId,
+      status: "Pending",
+      comments: resignation.comments || "",
+      employeeName: emp.name,
+      applyDate: resignation.applyDate,
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error", err });
+  }
+});
+
+// all resignations for specific emp
+app.get("/resignation/:empId", async (req, res) => {
+  try {
+    const { empId } = req.params;
+    let emp;
+
+    emp = await User.findOne({ employeeId: empId });
+
+    if (!emp && mongoose.Types.ObjectId.isValid(empId)) {
+      emp = await User.findById(empId);
+    }
+
+    if (!emp) {
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    const resignations = await Resignation.find({
+      employee: emp._id,
+    })
+      .sort({ createdAt: -1 })
+      .populate("employee", "employeeId name")
+      .populate("approvedBy", "name role");
+
+    res.json(
+      resignations.map((r) => ({
+        resignationId: r.resignationId,
+        applyDate: r.applyDate
+          ? r.applyDate.toISOString().split("T")[0]
+          : "N/A",
+        reason: r.reason,
+        comments: r.comments || "",
+        status: r.status,
+        approverComment: r.approverComment || "",
+        approvedBy: r.approvedBy
+          ? {
+              name: r.approvedBy.name,
+              role: r.approvedBy.role,
+            }
+          : null,
+        approvedDate: r.approvedDate
+          ? r.approvedDate.toISOString().split("T")[0]
+          : null,
+        lastWorkingDay: r.lastWorkingDay
+          ? r.lastWorkingDay.toISOString().split("T")[0]
+          : null,
+      })),
+    );
+  } catch (err) {
+    console.error("Error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// hr approve/reject resignation
+app.put("/resignation/:resignationId", authenticate, async (req, res) => {
+  try {
+    const { action, lastWorkingDay, approverComment } = req.body;
+
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ message: "User not authenticated" });
+    }
+
+    const resignation = await Resignation.findOne({
+      resignationId: req.params.resignationId,
+    });
+
+    if (!resignation)
+      return res.status(404).json({ message: "Resignation not found" });
+
+    if (resignation.status !== "Pending") {
+      return res.status(400).json({ message: "Resignation already processed" });
+    }
+
+    if (action === "approve") {
+      if (!lastWorkingDay) {
+        return res
+          .status(400)
+          .json({ message: "Last working day required for approval" });
+      }
+
+      resignation.status = "Approved";
+      resignation.lastWorkingDay = new Date(lastWorkingDay);
+      resignation.approverComment = approverComment || "-";
+      resignation.approvedBy = req.user._id;
+      resignation.approvedDate = new Date();
+    } else if (action === "reject") {
+      resignation.status = "Rejected";
+      resignation.approverComment = approverComment || "-";
+      resignation.approvedBy = req.user._id;
+      resignation.approvedDate = new Date();
+    } else {
+      return res.status(400).json({ message: "Invalid action." });
+    }
+
+    await resignation.save();
+
+    await resignation.populate("approvedBy", "name role");
+
+    res.json({
+      message: `Resignation ${action}ed successfully`,
+      status: resignation.status,
+      lastWorkingDay: resignation.lastWorkingDay,
+      approverComment: resignation.approverComment,
+      approvedBy: resignation.approvedBy
+        ? {
+            name: resignation.approvedBy.name,
+            role: resignation.approvedBy.role,
+          }
+        : null,
+      approvedDate: resignation.approvedDate,
+    });
+  } catch (err) {
+    console.error("Error in resignation approval:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+});
+
+// get all resignations
+app.get("/resignation", async (req, res) => {
+  try {
+    const resignations = await Resignation.find()
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "employee",
+        select: "employeeId name designation department doj reportingManager",
+        populate: {
+          path: "reportingManager",
+          select: "name",
+        },
+      })
+      .populate("approvedBy", "name role");
+
+    res.json(
+      resignations.map((r) => ({
+        resignationId: r.resignationId,
+        employeeId: r.employee.employeeId,
+        employeeName: r.employee.name,
+        designation: r.employee.designation,
+        department: r.employee.department,
+        applyDate: r.applyDate.toISOString().split("T")[0],
+        joiningDate: r.employee.doj.toISOString().split("T")[0],
+        reportingManager: r.employee.reportingManager
+          ? r.employee.reportingManager.name
+          : "Not assigned",
+        reason: r.reason,
+        comments: r.comments || "",
+        status: r.status,
+        approverComment: r.approverComment || "",
+        approvedBy: r.approvedBy
+          ? {
+              name: r.approvedBy.name,
+              role: r.approvedBy.role,
+            }
+          : null,
+        approvedDate: r.approvedDate
+          ? r.approvedDate.toISOString().split("T")[0]
+          : null,
+        lastWorkingDay: r.lastWorkingDay
+          ? r.lastWorkingDay.toISOString().split("T")[0]
+          : null,
+      })),
+    );
+  } catch (err) {
+    console.error("Error:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+});
+
+app.delete("/cancel/resignation/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    let resignation = await Resignation.findOne({ resignationId: id });
+
+    if (!resignation) {
+      if (mongoose.Types.ObjectId.isValid(id)) {
+        resignation = await Resignation.findById(id);
+      }
+    }
+
+    if (!resignation) {
+      return res.status(404).json({
+        success: false,
+        message: "Resignation not found",
+      });
+    }
+
+    if (
+      resignation.status === "Approved" ||
+      resignation.status === "Rejected"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete. Resignation is already ${resignation.status}`,
+      });
+    }
+
+    await Resignation.deleteOne({ _id: resignation._id });
+
+    res.json({
+      success: true,
+      message: "Resignation deleted successfully",
+      deletedId: resignation.resignationId || id,
+    });
+  } catch (err) {
+    console.error("Delete resignation error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+//get resignaton specific manager
+app.get("/resignation/manager/:managerId", async (req, res) => {
+  try {
+    const allResignations = await Resignation.find()
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "employee",
+        select: "employeeId name designation department doj reportingManager",
+        populate: {
+          path: "reportingManager",
+          select: "name",
+        },
+      })
+      .populate("approvedBy", "name role");
+
+    const managerResignations = allResignations.filter(
+      (r) =>
+        r.employee &&
+        r.employee.reportingManager &&
+        r.employee.reportingManager._id.toString() === req.params.managerId,
+    );
+
+    const result = managerResignations.map((r) => ({
+      resignationId: r.resignationId,
+      employeeId: r.employee.employeeId,
+      employeeName: r.employee.name,
+      designation: r.employee.designation,
+      department: r.employee.department,
+      applyDate: r.applyDate.toISOString().split("T")[0],
+      joiningDate: r.employee.doj
+        ? r.employee.doj.toISOString().split("T")[0]
+        : null,
+      reportingManager: r.employee.reportingManager
+        ? r.employee.reportingManager.name
+        : "Not assigned",
+      reason: r.reason,
+      comments: r.comments || "",
+      status: r.status,
+      approverComment: r.approverComment || "",
+      approvedBy: r.approvedBy
+        ? {
+            name: r.approvedBy.name,
+            role: r.approvedBy.role,
+          }
+        : null,
+      approvedDate: r.approvedDate
+        ? r.approvedDate.toISOString().split("T")[0]
+        : null,
+      lastWorkingDay: r.lastWorkingDay
+        ? r.lastWorkingDay.toISOString().split("T")[0]
+        : null,
+    }));
+
+    res.json({
+      total: result.length,
+      resignations: result,
+    });
+  } catch (err) {
+    console.error("Error:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+});
+
+//Jayshree interview start
+
+// employees + managers list to get in Interview scheduling
+app.get("/allEmp", async (req, res) => {
+  try {
+    const users = await User.find(
+      { role: { $in: ["employee", "manager"] } },
+      {
+        employeeId: 1,
+        name: 1,
+        designation: 1,
+        role: 1,
+      },
+    );
+
+    res.json({ success: true, employees: users });
+  } catch (err) {
+    res.status(500).json({ success: false });
+  }
+});
+
+// ================= HR CREATE SCHEDULE INTERVIEW (Jayashree 6th jan)=================
+
+app.post(
+  "/schedule-interview",
+  resumeUpload.single("resume"), // ✅ multer middleware
+  async (req, res) => {
+    console.log("FILE 👉", req.file); // 🔥 MUST PRINT
+    try {
+      const interviewData = {
+        candidateName: req.body.candidateName,
+        email: req.body.email,
+        role: req.body.role,
+        date: req.body.date,
+        startTime: req.body.startTime,
+        endTime: req.body.endTime,
+        duration: req.body.duration,
+        interviewType: req.body.interviewType,
+        interviewerId: new mongoose.Types.ObjectId(req.body.interviewerId), // ✅ FIX
+        interviewerName: req.body.interviewerName,
+        link: req.body.link,
+        status: req.body.status,
+        comment: req.body.comment || "",
+        resumeUrl: req.file ? `/uploads/${req.file.filename}` : null,
+      };
+
+      // 🔐 BACKEND SAFETY VALIDATION
+      const start = new Date(`1970-01-01T${interviewData.startTime}`);
+      const end = new Date(`1970-01-01T${interviewData.endTime}`);
+
+      if (end <= start) {
+        return res.status(400).json({
+          success: false,
+          message: "End time must be after start time",
+        });
+      }
+      // ✅ ADD THIS LINE (VERY IMPORTANT)
+      // interviewData.interviewer = interviewData.employeeId;
+      const interview = new Interview(interviewData);
+      await interview.save();
+
+      // 🔔 CREATE NOTIFICATION (MANAGER / EMPLOYEE)
+      await Notification.create({
+        user: interview.interviewerId, // 👈 SAME ID
+        type: "Interview",
+        message: `New interview scheduled for ${interview.candidateName} on ${interview.date}`,
+        interviewRef: interview._id,
+      });
+
+      res.status(201).json({
+        success: true,
+        message: "Interview scheduled successfully",
+        interview,
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        success: false,
+        message: "Failed to schedule interview",
+        error: err.message,
+      });
+    }
+  },
+);
+
+// ================= GET ALL INTERVIEWS =================
+app.get("/interviews", async (req, res) => {
+  try {
+    const interviews = await Interview.find().sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      interviews,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch interviews",
+    });
+  }
+});
+
+// get Schedule Interview API for Employee Role
+app.get("/interviews/employee/:employeeId", async (req, res) => {
+  try {
+    if (!req.headers.role || req.headers.role !== "employee") {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const { employeeId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+      return res.status(400).json({ message: "Invalid employeeId" });
+    }
+
+    const interviews = await Interview.find(
+      { interviewerId: employeeId }, // 🔥 CORE MATCH
+      {
+        interviewId: 1,
+        candidateName: 1,
+        email: 1,
+        role: 1,
+        resumeUrl: 1,
+        date: 1,
+        startTime: 1,
+        endTime: 1,
+        duration: 1,
+        interviewType: 1,
+        interviewerId: 1,
+        interviewerName: 1,
+        link: 1,
+        status: 1,
+        comment: 1,
+      },
+    ).sort({ date: 1 });
+
+    res.status(200).json(interviews);
+  } catch (error) {
+    console.error("Employee interview fetch error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// get Schedule Interview API for Manager Role
+app.get("/interviews/manager/:managerId", async (req, res) => {
+  try {
+    // 🔐 ROLE CHECK
+    if (!req.headers.role || req.headers.role !== "manager") {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    // ✅ SAME STYLE AS EMPLOYEE
+    const { managerId } = req.params;
+
+    // 🛡️ ObjectId validation
+    if (!mongoose.Types.ObjectId.isValid(managerId)) {
+      return res.status(400).json({ message: "Invalid managerId" });
+    }
+
+    // 🔥 INTERVIEWSID HI USE KARNA HAI
+    const interviews = await Interview.find(
+      { interviewerId: managerId }, // 🔥 SAME CORE LOGIC
+      {
+        interviewId: 1,
+        candidateName: 1,
+        email: 1,
+        role: 1,
+        resumeUrl: 1,
+        date: 1,
+        startTime: 1,
+        endTime: 1,
+        duration: 1,
+        interviewType: 1,
+        interviewerId: 1,
+        interviewerName: 1,
+        link: 1,
+        status: 1,
+        comment: 1,
+      },
+    ).sort({ date: 1 });
+
+    res.status(200).json(interviews);
+  } catch (error) {
+    console.error("Manager interview fetch error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// DELETE interview 10th jan
+app.delete("/interviewsDelete/:id", async (req, res) => {
+  console.log("DELETE HIT", req.params.id);
+  try {
+    const { id } = req.params;
+
+    const interview = await Interview.findById(id);
+    if (!interview) {
+      return res.status(404).json({
+        success: false,
+        message: "Interview not found",
+      });
+    }
+
+    // ❌ ON-GOING interview delete nahi hoga
+    if (interview.status === "On-going") {
+      return res.status(400).json({
+        success: false,
+        message: "On-going interview cannot be deleted",
+      });
+    }
+
+    await Interview.findByIdAndDelete(id);
+
+    res.json({
+      success: true,
+      message: "Interview deleted successfully",
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete interview",
+    });
+  }
+});
+
+//  UPDATE Action Button for Scheduled Interview: 12th jan
+//const upload = require("../middleware/resumeUpload"); // ya jahan tumhara multer middleware hai
+
+app.put(
+  "/interviewsUpdate/:id",
+  resumeUpload.single("resume"),
+  async (req, res) => {
+    console.log("PUT HIT", req.params.id);
+    console.log("BODY:", req.body);
+    try {
+      const { id } = req.params;
+
+      const interview = await Interview.findById(id);
+      const oldInterviewerId = interview.interviewerId?.toString();
+      if (!interview) {
+        return res.status(404).json({
+          success: false,
+          message: "Interview not found",
+        });
+      }
+
+      // ❌ ON-GOING interview update nahi hoga
+      if (interview.status === "On-going") {
+        return res.status(400).json({
+          success: false,
+          message: "On-going interview cannot be updated",
+        });
+      }
+      // Update text fields
+      if (req.body.candidateName)
+        interview.candidateName = req.body.candidateName;
+      if (req.body.email) interview.email = req.body.email;
+      if (req.body.role) interview.role = req.body.role;
+      if (req.body.date) interview.date = req.body.date;
+      if (req.body.startTime) interview.startTime = req.body.startTime;
+      if (req.body.endTime) interview.endTime = req.body.endTime;
+      if (req.body.duration) interview.duration = req.body.duration;
+      if (req.body.interviewType)
+        interview.interviewType = req.body.interviewType;
+      if (req.body.interviewerId)
+        interview.interviewerId = req.body.interviewerId;
+      if (req.body.interviewerName)
+        interview.interviewerName = req.body.interviewerName;
+      if (req.body.link) interview.link = req.body.link;
+      if (req.body.status) interview.status = req.body.status;
+      if (req.body.comment) interview.comment = req.body.comment;
+      // 🔥 Update resume only if a new file is uploaded
+      if (req.file) {
+        interview.resumeUrl = `/uploads/${req.file.filename}`;
+      }
+
+      await interview.save();
+
+      // 🔔 INTERVIEWER CHANGE NOTIFICATION
+      if (
+        req.body.interviewerId &&
+        req.body.interviewerId !== oldInterviewerId
+      ) {
+        await Notification.create({
+          user: req.body.interviewerId, // new interviewer
+          type: "Interview",
+          message: `You have been assigned a new interview for ${interview.candidateName} on ${new Date(interview.date).toLocaleDateString()}`,
+          interviewRef: interview._id,
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Interview updated successfully",
+        data: interview,
+      });
+    } catch (err) {
+      console.error(err);
+      res
+        .status(500)
+        .json({ success: false, message: "Failed to update interview" });
+    }
+  },
+);
+
+// UPDATE interview status & comment (EMPLOYEE)
+app.put("/interviews/employee/:interviewId", async (req, res) => {
+  try {
+    // 🔐 ROLE CHECK
+    if (!req.headers.role || req.headers.role !== "employee") {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const { interviewId } = req.params;
+    const { status, comment } = req.body;
+
+    // ✅ ID VALIDATION
+    if (!mongoose.Types.ObjectId.isValid(interviewId)) {
+      return res.status(400).json({ message: "Invalid interviewId" });
+    }
+
+    // ✅ ONLY ALLOWED FIELDS
+    const updateData = {};
+    if (status) updateData.status = status;
+    if (comment !== undefined) updateData.comment = comment;
+
+    // 🔥 UPDATE
+    const updatedInterview = await Interview.findByIdAndUpdate(
+      interviewId,
+      updateData,
+      { new: true },
+    );
+
+    if (!updatedInterview) {
+      return res.status(404).json({ message: "Interview not found" });
+    }
+
+    if (updatedInterview.status === "On-going") {
+      return res.status(400).json({
+        message: "On-going interview cannot be updated",
+      });
+    }
+
+    res.status(200).json({
+      message: "Interview updated successfully",
+      data: updatedInterview,
+    });
+  } catch (error) {
+    console.error("Employee interview update error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// UPDATE interview status & comment (MANAGER)
+app.put("/interviews/managerUpdate/:interviewId", async (req, res) => {
+  try {
+    // 🔐 ROLE CHECK
+    if (!req.headers.role || req.headers.role !== "manager") {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const { interviewId } = req.params;
+    const { status, comment } = req.body;
+
+    // ✅ ID VALIDATION
+    if (!mongoose.Types.ObjectId.isValid(interviewId)) {
+      return res.status(400).json({ message: "Invalid interviewId" });
+    }
+
+    // 🔍 FIND INTERVIEW FIRST
+    const interview = await Interview.findById(interviewId);
+
+    if (!interview) {
+      return res.status(404).json({ message: "Interview not found" });
+    }
+
+    // ❌ BLOCK ON-GOING UPDATE
+    if (interview.status === "On-going") {
+      return res.status(400).json({
+        message: "On-going interview cannot be updated",
+      });
+    }
+
+    // ✅ ONLY ALLOWED FIELDS
+    if (status) interview.status = status;
+    if (comment !== undefined) interview.comment = comment;
+
+    await interview.save();
+
+    res.status(200).json({
+      message: "Interview updated successfully",
+      data: interview,
+    });
+  } catch (error) {
+    console.error("Manager interview update error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// jayshree interview end
 
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

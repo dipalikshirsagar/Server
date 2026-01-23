@@ -65,4 +65,14 @@ const taskSchema = new mongoose.Schema(
 
   { timestamps: true }
 );
+
+taskSchema.post("findOneAndDelete", async function (doc) {
+  try {
+    if (doc) {
+      await TaskLog.deleteMany({ task: doc._id });
+    }
+  } catch (err) {
+    console.error("Error deleting task logs:", err);
+  }
+});
 module.exports = mongoose.model("Task", taskSchema);
