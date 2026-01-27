@@ -115,11 +115,25 @@ exports.createWorkLog = async (req, res) => {
 exports.getEmployeeLogs = async (req, res) => {
   try {
     const logs = await TaskWorkLog.find({ employee: req.params.id })
-      .populate("task")
+      .populate({
+        path: "task",
+      })
+      .populate({
+        path: "approvedBy",
+        select: "name email",
+      })
+      .populate({
+        path: "employee",
+        select: "name",
+      })
       .sort({ date: -1 });
 
-    res.json(logs);
+    // Filter out logs where populate returned null
+    const filteredLogs = logs.filter((log) => log.task !== null);
+
+    res.json(filteredLogs);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: "Failed to fetch logs" });
   }
 };
@@ -128,10 +142,21 @@ exports.getEmployeeLogs = async (req, res) => {
 exports.getAllLogs = async (req, res) => {
   try {
     const logs = await TaskWorkLog.find()
-      .populate("task employee approvedBy")
+      .populate({
+        path: "task",
+      })
+      .populate({
+        path: "employee",
+      })
+      .populate({
+        path: "approvedBy",
+        select: "name email",
+      })
       .sort({ date: -1 });
+    // Filter out logs where populate returned null
+    const filteredLogs = logs.filter((log) => log.task !== null);
 
-    res.json(logs);
+    res.json(filteredLogs);
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch logs" });
   }
@@ -304,7 +329,7 @@ exports.approveRejectLog = async (req, res) => {
         approvedBy: req.user.id,
         approvedAt: new Date(),
       },
-      { new: true }
+      { new: true },
     );
 
     res.json(log);

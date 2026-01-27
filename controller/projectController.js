@@ -872,6 +872,7 @@ exports.createProject = async (req, res) => {
 exports.getProjects = async (req, res) => {
   try {
     const projects = await Project.find()
+      .sort({ createdAt: -1 })
       .populate("managers", "name email role")
       .populate("assignedEmployees", "name email role")
       .populate("manualStatusUpdatedBy", "name role");
@@ -1176,9 +1177,11 @@ exports.getUniqueProjectNames = async (req, res) => {
     }
 
     const managerObjectId = new mongoose.Types.ObjectId(managerId);
-
     const projects = await Project.find(
-      { managers: { $in: [managerObjectId] } },
+      {
+        managers: { $in: [managerObjectId] },
+        manualStatus: { $nin: ["Completed", "Cancelled"] },
+      },
       { name: 1, _id: 0 },
     );
 

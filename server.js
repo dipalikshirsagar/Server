@@ -5412,8 +5412,10 @@ app.get("/projects/employees/:projectId", async (req, res) => {
       .select("assignToProject");
 
     if (!team) {
-      return res.status(404).json({
-        success: false,
+      return res.status(200).json({
+        success: true,
+        count: 0,
+        data: [],
         message: "No team assigned to this project",
       });
     }
@@ -5426,34 +5428,7 @@ app.get("/projects/employees/:projectId", async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       success: false,
-      message: error.message,
-    });
-  }
-});
-
-app.get("/projects/employees/:projectId", async (req, res) => {
-  try {
-    const { projectId } = req.params;
-
-    const team = await Team.findOne({ project: projectId })
-      .populate("assignToProject", "_id name email department")
-      .select("assignToProject");
-
-    if (!team) {
-      return res.status(404).json({
-        success: false,
-        message: "No team assigned to this project",
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      count: team.assignToProject.length,
-      data: team.assignToProject,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
+      data: [],
       message: error.message,
     });
   }
@@ -6876,6 +6851,10 @@ app.post("/project/:projectId/comment", authenticate, async (req, res) => {
       }
     }
 
+    const sortedComments = project.comments.sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
+    );
+
     res.status(201).json({
       success: true,
       message: "Comment added successfully",
@@ -7129,7 +7108,7 @@ app.get("/bench-employees", authenticate, async (req, res) => {
     // FOR ADMIN/HR/CEO/COO/MD → fetch all employees
     if (["admin", "ceo", "hr", "coo", "md"].includes(role)) {
       employees = await User.find(
-        { role: ["employee", "hr", "manager"] }, // only employees added harshada
+        { role: ["employee"] }, // only employees added harshada
         {
           name: 1,
           designation: 1,
