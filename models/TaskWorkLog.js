@@ -41,7 +41,7 @@ const taskWorkLogSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["Submitted", "InProgress", "Pending", "Approved", "Rejected"],
+      enum: ["Submitted", "In Progress", "Pending", "Approved", "Rejected"],
       default: "Pending",
     },
 
@@ -63,7 +63,7 @@ const taskWorkLogSchema = new mongoose.Schema(
       min: 0,
       max: 100,
       required: function () {
-        return this.status === "InProgress";
+        return this.status === "In Progress";
       },
     },
     approvedBy: {

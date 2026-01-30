@@ -99,7 +99,6 @@ exports.getAllTeams = async (req, res) => {
     })
       .populate({
         path: "project",
-        select: "_id name startDate endDate dueDate",
         match: { _id: { $exists: true } },
       })
       .populate("assignToProject", "_id name");
@@ -123,7 +122,6 @@ exports.getTeamById = async (req, res) => {
     const team = await Team.findById(req.params.id)
       .populate({
         path: "project",
-        select: "_id name startDate endDate dueDate",
         match: { _id: { $exists: true } },
       })
       .populate("assignToProject", "_id name");
@@ -230,7 +228,7 @@ exports.getTeamsByEmployeeId = async (req, res) => {
     })
       .populate({
         path: "project",
-        select: "_id name startDate endDate dueDate",
+
         populate: {
           path: "managers",
           select: "name",
@@ -270,7 +268,7 @@ exports.getTeamsCreatedByUserId = async (req, res) => {
       createdBy: userId,
       project: { $exists: true, $ne: null },
     })
-      .populate("project", "_id name startDate endDate dueDate")
+      .populate("project")
       .populate("assignToProject", "_id name")
       .sort({ createdAt: -1 });
 

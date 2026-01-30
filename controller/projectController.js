@@ -734,8 +734,8 @@ exports.createProject = async (req, res) => {
     if (!startDate)
       return res.status(400).json({ message: "Start date is required" });
 
-    if (!endDate)
-      return res.status(400).json({ message: "End date is required" });
+    // if (!endDate)
+    //   return res.status(400).json({ message: "End date is required" });
 
     if (!priority)
       return res.status(400).json({ message: "Priority is required" });

@@ -137,7 +137,7 @@ const ProjectSchema = new mongoose.Schema(
 
     clientName: String,
     startDate: { type: Date, required: true },
-    endDate: { type: Date, required: true },
+    // endDate: { type: Date, required: true },
     dueDate: { type: Date, required: true },
 
     manualStatus: {

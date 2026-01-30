@@ -46,7 +46,7 @@ exports.createWorkLog = async (req, res) => {
     const status = req.body.status;
     console.log("status", req.body.status);
     // 🔒 Validate progressToday only when Pending
-    if (status === "InProgress") {
+    if (status === "In Progress") {
       if (progressToday === undefined || progressToday === null) {
         return res.status(400).json({
           message: "progressToday is required when status is Pending.",
@@ -100,7 +100,7 @@ exports.createWorkLog = async (req, res) => {
       challengesFaced,
       whatLearnedToday,
       status,
-      ...(status === "InProgress" && { progressToday }),
+      ...(status === "In Progress" && { progressToday }),
     });
     console.log("log", log);
     res.status(201).json({ message: "Task log submitted successfully.", log });
@@ -241,7 +241,7 @@ exports.updateWorkLog = async (req, res) => {
     const status = req.body.status || log.status;
 
     // 🔒 progressToday rules
-    if (status === "InProgress") {
+    if (status === "In Progress") {
       if (progressToday === undefined || progressToday === null) {
         return res.status(400).json({
           message: "progressToday is required when status is In progress.",

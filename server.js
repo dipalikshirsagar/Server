@@ -152,20 +152,47 @@ app.get("/", (req, res) => {
 //   },
 // });
 
+// const storage = new CloudinaryStorage({
+//   cloudinary,
+//   params: async (req, file) => {
+//     let resourceType = "image";
+//     if (file.mimetype === "application/pdf") resourceType = "raw";
+
+//     return {
+//       folder: "uploads",
+//       resource_type: resourceType,
+//     };
+//   },
+// });
+
+// const upload = multer({ storage });
+//SNehal COde
 const storage = new CloudinaryStorage({
   cloudinary,
   params: async (req, file) => {
     let resourceType = "image";
-    if (file.mimetype === "application/pdf") resourceType = "raw";
+
+    // ✅ Allow PDF & Excel as RAW
+    if (
+      file.mimetype === "application/pdf" ||
+      file.mimetype === "application/vnd.ms-excel" ||
+      file.mimetype ===
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ) {
+      resourceType = "raw";
+    }
 
     return {
       folder: "uploads",
       resource_type: resourceType,
+      public_id: `${Date.now()}-${file.originalname}`,
     };
   },
 });
 
 const upload = multer({ storage });
+//SNehal COde
+
 
 // Nodemailer transporter
 const transporter = nodemailer.createTransport({
@@ -4575,12 +4602,13 @@ app.delete("/task/:id", async (req, res) => {
 });
 
 // Add Comment to Task
-app.post("/task/:taskId/comment", async (req, res) => {
+app.post("/task/:taskId/comment", authenticate, async (req, res) => {
   try {
     const { taskId } = req.params;
     const { comment } = req.body;
+    const userId = req.user._id;
 
-    // Validate
+    // Validate comment
     if (!comment || !comment.trim()) {
       return res.status(400).json({
         success: false,
@@ -4595,20 +4623,9 @@ app.post("/task/:taskId/comment", async (req, res) => {
       });
     }
 
-    // Add comment directly
-    const task = await Task.findByIdAndUpdate(
-      taskId,
-      {
-        $push: {
-          comments: {
-            text: comment.trim(),
-            createdAt: new Date(),
-            anonymous: true,
-          },
-        },
-      },
-      { new: true },
-    );
+    const task = await Task.findById(taskId)
+      .populate("createdBy", "_id")
+      .populate("assignedTo", "_id");
 
     if (!task) {
       return res.status(404).json({
@@ -4617,9 +4634,46 @@ app.post("/task/:taskId/comment", async (req, res) => {
       });
     }
 
+    const isCreator =
+      task.createdBy && task.createdBy._id.toString() === userId.toString();
+    const isAssignee =
+      task.assignedTo && task.assignedTo._id.toString() === userId.toString();
+
+    if (!isCreator && !isAssignee) {
+      return res.status(403).json({
+        success: false,
+        message: "Only task creator or assignee can add comments",
+      });
+    }
+
+    const updatedTask = await Task.findByIdAndUpdate(
+      taskId,
+      {
+        $push: {
+          comments: {
+            text: comment.trim(),
+            user: userId,
+            createdAt: new Date(),
+          },
+        },
+      },
+      { new: true },
+    );
+
+    const populatedTask = await Task.findById(taskId)
+      .populate({
+        path: "comments.user",
+        select: "name email role profilePicture",
+      })
+      .select("comments");
+
+    const latestComment =
+      populatedTask.comments[populatedTask.comments.length - 1];
+
     res.status(201).json({
       success: true,
       message: "Comment added successfully",
+      comment: latestComment,
     });
   } catch (error) {
     console.error("Error adding comment:", error);
@@ -4677,6 +4731,195 @@ app.get("/task/:taskId/comments", async (req, res) => {
   }
 });
 
+app.delete(
+  "/task/:taskId/comment/:commentId",
+  authenticate,
+  async (req, res) => {
+    try {
+      const { taskId, commentId } = req.params;
+      const userId = req.user._id;
+
+      if (!mongoose.Types.ObjectId.isValid(taskId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid task ID",
+        });
+      }
+
+      if (!mongoose.Types.ObjectId.isValid(commentId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid comment ID",
+        });
+      }
+
+      const task = await Task.findById(taskId);
+
+      if (!task) {
+        return res.status(404).json({
+          success: false,
+          message: "Task not found",
+        });
+      }
+
+      if (!Array.isArray(task.comments) || task.comments.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No comments found",
+        });
+      }
+
+      const commentIndex = task.comments.findIndex(
+        (comment) => comment._id.toString() === commentId,
+      );
+
+      if (commentIndex === -1) {
+        return res.status(404).json({
+          success: false,
+          message: "Comment not found",
+        });
+      }
+
+      const comment = task.comments[commentIndex];
+
+      const isCommentCreator =
+        comment.user && comment.user.toString() === userId.toString();
+
+      const populatedTask = await Task.findById(taskId)
+        .populate("createdBy", "_id")
+        .populate("assignedTo", "_id");
+
+      const isTaskCreator =
+        populatedTask.createdBy &&
+        populatedTask.createdBy._id.toString() === userId.toString();
+      const isTaskAssignee =
+        populatedTask.assignedTo &&
+        populatedTask.assignedTo._id.toString() === userId.toString();
+
+      if (!isCommentCreator && !isTaskCreator && !isTaskAssignee) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not authorized to delete this comment",
+        });
+      }
+
+      task.comments.splice(commentIndex, 1);
+
+      await task.save();
+
+      res.status(200).json({
+        success: true,
+        message: "Comment deleted successfully",
+        deletedCommentId: commentId,
+      });
+    } catch (error) {
+      console.error("Error deleting comment:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  },
+);
+
+app.put("/task/:taskId/comment/:commentId", authenticate, async (req, res) => {
+  try {
+    const { taskId, commentId } = req.params;
+    const { comment: commentText } = req.body;
+    const userId = req.user._id;
+
+    if (!commentText || !commentText.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Comment cannot be empty",
+      });
+    }
+
+    if (
+      !mongoose.Types.ObjectId.isValid(taskId) ||
+      !mongoose.Types.ObjectId.isValid(commentId)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid task ID or comment ID",
+      });
+    }
+
+    const task = await Task.findById(taskId);
+
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: "Task not found",
+      });
+    }
+
+    if (!Array.isArray(task.comments) || task.comments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Comment not found",
+      });
+    }
+
+    const commentIndex = task.comments.findIndex(
+      (c) =>
+        c._id.toString() === commentId &&
+        c.user.toString() === userId.toString(),
+    );
+
+    if (commentIndex === -1) {
+      const commentExists = task.comments.some(
+        (c) => c._id.toString() === commentId,
+      );
+
+      if (commentExists) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only edit your own comments",
+        });
+      } else {
+        return res.status(404).json({
+          success: false,
+          message: "Comment not found",
+        });
+      }
+    }
+
+    task.comments[commentIndex].text = commentText.trim();
+    task.comments[commentIndex].updatedAt = new Date();
+    task.comments[commentIndex].isEdited = true;
+
+    await task.save();
+
+    const populatedTask = await Task.findById(taskId)
+      .populate({
+        path: "comments.user",
+        select: "name email role ",
+      })
+      .select("comments");
+
+    const updatedComment = populatedTask.comments.id(commentId);
+
+    res.status(200).json({
+      success: true,
+      message: "Comment updated successfully",
+      comment: {
+        _id: updatedComment._id,
+        text: updatedComment.text,
+        user: updatedComment.user,
+        createdAt: updatedComment.createdAt,
+        updatedAt: updatedComment.updatedAt,
+        isEdited: updatedComment.isEdited,
+      },
+    });
+  } catch (error) {
+    console.error("Error editing comment:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+});
 // Admin Add Task  Status
 app.post("/taskstatus/add", async (req, res) => {
   try {
@@ -6908,6 +7151,181 @@ app.get("/project/:projectId/comments", async (req, res) => {
     });
   }
 });
+app.delete(
+  "/project/:projectId/comment/:commentId",
+  authenticate,
+  async (req, res) => {
+    try {
+      const { projectId, commentId } = req.params;
+      const userId = req.user._id;
+
+      if (!mongoose.Types.ObjectId.isValid(projectId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid project ID",
+        });
+      }
+
+      if (!mongoose.Types.ObjectId.isValid(commentId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid comment ID",
+        });
+      }
+
+      const project = await Project.findById(projectId);
+
+      if (!project) {
+        return res.status(404).json({
+          success: false,
+          message: "Project not found",
+        });
+      }
+
+      if (!Array.isArray(project.comments) || project.comments.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No comments found",
+        });
+      }
+
+      const commentIndex = project.comments.findIndex(
+        (comment) => comment._id.toString() === commentId,
+      );
+
+      if (commentIndex === -1) {
+        return res.status(404).json({
+          success: false,
+          message: "Comment not found",
+        });
+      }
+
+      const comment = project.comments[commentIndex];
+
+      if (!comment.user || comment.user.toString() !== userId.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not authorized to delete this comment",
+        });
+      }
+
+      project.comments.splice(commentIndex, 1);
+
+      await project.save();
+
+      res.status(200).json({
+        success: true,
+        message: "Comment deleted successfully",
+        deletedCommentId: commentId,
+      });
+    } catch (error) {
+      console.error("Error deleting comment:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  },
+);
+app.put(
+  "/project/:projectId/comment/:commentId",
+  authenticate,
+  async (req, res) => {
+    try {
+      const { projectId, commentId } = req.params;
+      const { comment } = req.body;
+      const userId = req.user._id;
+
+      if (!comment || !comment.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Comment cannot be empty",
+        });
+      }
+
+      if (
+        !mongoose.Types.ObjectId.isValid(projectId) ||
+        !mongoose.Types.ObjectId.isValid(commentId)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid project ID or comment ID",
+        });
+      }
+
+      const project = await Project.findById(projectId);
+
+      if (!project) {
+        return res.status(404).json({
+          success: false,
+          message: "Project not found",
+        });
+      }
+
+      if (!Array.isArray(project.comments) || project.comments.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Comment not found",
+        });
+      }
+
+      const commentIndex = project.comments.findIndex(
+        (c) =>
+          c._id.toString() === commentId &&
+          c.user.toString() === userId.toString(),
+      );
+
+      if (commentIndex === -1) {
+        const commentExists = project.comments.some(
+          (c) => c._id.toString() === commentId,
+        );
+
+        if (commentExists) {
+          return res.status(403).json({
+            success: false,
+            message: "You can only edit your own comments",
+          });
+        } else {
+          return res.status(404).json({
+            success: false,
+            message: "Comment not found",
+          });
+        }
+      }
+
+      project.comments[commentIndex].text = comment.trim();
+      project.comments[commentIndex].updatedAt = new Date();
+      project.comments[commentIndex].isEdited = true;
+
+      await project.save();
+
+      const commenter = await User.findById(userId).select("name role");
+
+      const updatedComment = project.comments[commentIndex];
+
+      res.status(200).json({
+        success: true,
+        message: "Comment updated successfully",
+        comment: {
+          _id: updatedComment._id,
+          text: updatedComment.text,
+          user: updatedComment.user,
+          createdAt: updatedComment.createdAt,
+          updatedAt: updatedComment.updatedAt,
+          isEdited: updatedComment.isEdited,
+        },
+      });
+    } catch (error) {
+      console.error("Error editing comment:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  },
+);
+
+//rutuja end comment
 
 // start task time
 app.post("/task/:taskId/start", async (req, res) => {
@@ -7108,7 +7526,8 @@ app.get("/bench-employees", authenticate, async (req, res) => {
     // FOR ADMIN/HR/CEO/COO/MD → fetch all employees
     if (["admin", "ceo", "hr", "coo", "md"].includes(role)) {
       employees = await User.find(
-        { role: ["employee"] }, // only employees added harshada
+
+        { role: ["employee"] ,isDeleted: { $ne: true }}, // only employees added harshada
         {
           name: 1,
           designation: 1,
