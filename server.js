@@ -35,7 +35,7 @@ const Resignation = require("./models/ResignationSchema");
 const ticketRoutes = require("./routes/ticketRoutes");
 const { getValidWorkingDays } = require("./services/dateUtils");
 
-const Performance = require("./models/performanceSchema"); //added by jayshree
+const Performance = require("./models/PerformanceSchema"); //added by jayshree
 
 // ✅ Import Cloudinary config (convert import → require)
 const { v2: cloudinary } = require("cloudinary");
@@ -3284,23 +3284,23 @@ app.post("/attendance/regularization/apply", async (req, res) => {
         .json({ error: "Check-in time must be earlier than check-out time" });
     }
 
-    // Validation 2: both within 9:00 AM – 6:00 PM IST
-    function isWithinWorkingHours(dateObj) {
-      const hours = dateObj.getHours(); // in UTC, already converted from IST
-      const minutes = dateObj.getMinutes();
-      const totalMinutes = hours * 60 + minutes;
+    // // Validation 2: both within 9:00 AM – 6:00 PM IST
+    // function isWithinWorkingHours(dateObj) {
+    //   const hours = dateObj.getHours(); // in UTC, already converted from IST
+    //   const minutes = dateObj.getMinutes();
+    //   const totalMinutes = hours * 60 + minutes;
 
-      const workStart = 9 * 60; // 9:00 AM IST → 3:30 AM UTC
-      const workEnd = 18 * 60; // 6:00 PM IST → 12:30 PM UTC
+    //   const workStart = 9 * 60; // 9:00 AM IST → 3:30 AM UTC
+    //   const workEnd = 18 * 60; // 6:00 PM IST → 12:30 PM UTC
 
-      return totalMinutes >= workStart && totalMinutes <= workEnd;
-    }
+    //   return totalMinutes >= workStart && totalMinutes <= workEnd;
+    // }
 
-    if (!isWithinWorkingHours(checkInDate) || !isWithinWorkingHours(checkOutDate)) {
-      return res.status(400).json({
-        error: "Check-in and check-out times must be within 9:00 AM to 6:00 PM",
-      });
-    }
+    // if (!isWithinWorkingHours(checkInDate) || !isWithinWorkingHours(checkOutDate)) {
+    //   return res.status(400).json({
+    //     error: "Check-in and check-out times must be within 9:00 AM to 6:00 PM",
+    //   });
+    // }
 
     // Validation 3: Reason ≤ 20 words
       if (reason) {
