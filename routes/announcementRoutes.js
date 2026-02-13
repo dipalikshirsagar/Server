@@ -3,13 +3,15 @@ const router = express.Router();
 
 const {
   createAnnouncement,
-  getAnnouncements
+  getAnnouncements,
+  deleteAnnouncement,
  
 } = require("../controller/announcementController");
 const { v2: cloudinary } = require("cloudinary");
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const dotenv = require("dotenv");
 const multer = require("multer");
+
 
 dotenv.config();
 
@@ -30,6 +32,7 @@ const storage = new CloudinaryStorage({
 const upload = multer({ storage });
 router.get("/", getAnnouncements);
 router.post("/", upload.fields([{ name: "image", maxCount: 1 }]), createAnnouncement);
+router.delete("/:id", deleteAnnouncement);   //Added by Samiksha
 
 
 module.exports = router;

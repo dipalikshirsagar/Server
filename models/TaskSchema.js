@@ -22,6 +22,15 @@ const taskSchema = new mongoose.Schema(
     dateOfExpectedCompletion: { type: Date },
     progressPercentage: { type: String, default: 0, required: true },
     documents: { type: String },
+    workingDays: {
+    type: Number,
+    default: 1,
+  },
+
+  dailyEstimatedHours: {
+    type: Number,
+    default: 0,
+  },
     comments: [
       {
         text: {
@@ -49,6 +58,7 @@ const taskSchema = new mongoose.Schema(
       default: "P3",
       required: true,
     },
+    estimatedHours: {type: Number,required: true,min: 0},
     timeTracking: {
       isRunning: { type: Boolean, default: false },
       startTime: { type: Date, default: null },

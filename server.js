@@ -33,6 +33,9 @@ const anniversaryAnnouncementTemplate = require("./template/anniversaryAnnouncem
 const Feedback = require("./models/FeedbackSchema");
 const Resignation = require("./models/ResignationSchema");
 const ticketRoutes = require("./routes/ticketRoutes");
+const { getValidWorkingDays } = require("./services/dateUtils");
+
+const Performance = require("./models/PerformanceSchema"); //added by jayshree
 
 // ✅ Import Cloudinary config (convert import → require)
 const { v2: cloudinary } = require("cloudinary");
@@ -192,7 +195,6 @@ const storage = new CloudinaryStorage({
 
 const upload = multer({ storage });
 //SNehal COde
-
 
 // Nodemailer transporter
 const transporter = nodemailer.createTransport({
@@ -498,7 +500,21 @@ async function autoGrantLeaveIfProbationCompleted(user) {
   const today = new Date();
 
   if (user.probationCompleted === true) return; // already credited
-  if (!user.probationEndDate) return; // no probation date set
+  // if (!user.probationEndDate) return; // no probation date set
+  let probationEndDate = user.probationEndDate;
+
+  if (!probationEndDate) {
+    if (!user.doj || !user.probationMonths) return;
+
+    probationEndDate = new Date(user.doj);
+    probationEndDate.setMonth(
+      probationEndDate.getMonth() + user.probationMonths,
+    );
+
+    // save computed probation end date
+    user.probationEndDate = probationEndDate;
+    await user.save();
+  }
   if (today < user.probationEndDate) return; // still in probation
 
   // default yearly leave
@@ -545,13 +561,20 @@ async function autoGrantLeaveIfProbationCompleted(user) {
   // -----------------------------------------------------
   // 2️⃣ SEND NOTIFICATION TO EMPLOYEE
   // -----------------------------------------------------
+  // await Notification.create({
+  //   userId: user._id,
+  //   message:
+  //     "🎉 Congratulations! You have completed your probation period and yearly leave has been credited.",
+  //   createdAt: new Date(),
+  // });
   await Notification.create({
-    userId: user._id,
+    user: user._id,
+    type: "Probation",
     message:
       "🎉 Congratulations! You have completed your probation period and yearly leave has been credited.",
     createdAt: new Date(),
+    triggeredByRole: "HR",
   });
-
   // -----------------------------------------------------
   // 3️⃣ SEND NOTIFICATION TO ADMIN
   // -----------------------------------------------------
@@ -559,9 +582,11 @@ async function autoGrantLeaveIfProbationCompleted(user) {
 
   for (const admin of admins) {
     await Notification.create({
-      userId: admin._id,
+      user: admin._id,
+      type: "Probation",
       message: `${user.name} has completed probation and leave balance is credited.`,
       createdAt: new Date(),
+      triggeredByRole: "EMPLOYEE",
     });
   }
 
@@ -570,9 +595,11 @@ async function autoGrantLeaveIfProbationCompleted(user) {
   // -----------------------------------------------------
   if (user.managerId) {
     await Notification.create({
-      userId: user.managerId,
+      user: user.managerId,
+      type: "Probation",
       message: `Your team member ${user.name} has completed probation and leave is credited.`,
       createdAt: new Date(),
+      triggeredByRole: "EMPLOYEE",
     });
   }
 }
@@ -1053,7 +1080,9 @@ app.get("/getAllEmployees", authenticate, async (req, res) => {
     // );
 
     // Return ALL employees including deleted
-    const employees = await User.find().select("-password -refreshToken");
+    const employees = await User.find()
+      .populate("reportingManager", "name") //added jayu
+      .select("-password -refreshToken");
 
     res.json(employees);
   } catch (err) {
@@ -1562,7 +1591,13 @@ app.get("/attendance/today", authenticate, async (req, res) => {
     }
 
     // Get all employees
-    const employees = await User.find();
+    // Get all employees
+    const employees = await User.find({
+      //added jayu
+      $expr: {
+        $in: [{ $toLower: "$role" }, ["hr", "manager", "employee"]],
+      },
+    });
 
     // Get today's attendance records
     const attendanceRecords = await Attendance.find({
@@ -1924,6 +1959,114 @@ app.get("/users/:id", async (req, res) => {
 // });
 
 const Notification = require("./models/notificationSchema");
+// app.post("/leave/apply", async (req, res) => {
+
+//   try {
+//     const {
+//       employeeId,
+//       leaveType,
+//       dateFrom,
+//       dateTo,
+//       duration,
+//       reason,
+//       reportingManagerId,
+//     } = req.body;
+
+//     const employee = await User.findById(employeeId);
+//     if (!employee) return res.status(404).json({ error: "Employee not found" });
+
+//     const start = new Date(dateFrom);
+//     const end = new Date(dateTo);
+//     start.setHours(0, 0, 0, 0);
+//     end.setHours(0, 0, 0, 0);
+
+//     //  // ✅ Check if leave already exists on same or overlapping date range
+//     //   const overlappingLeave = await Leave.findOne({
+//     //     employee: employeeId,
+//     //     status: { $ne: "rejected" }, // ignore rejected
+//     //     $or: [
+//     //       {
+//     //         dateFrom: { $lte: end },
+//     //         dateTo: { $gte: start },
+//     //       },
+//     //     ],
+//     //   });
+
+//     //   if (overlappingLeave) {
+//     //     return res.status(400).json({
+//     //       error:
+//     //         "You already have a leave applied for one or more of these dates.",
+//     //     });
+//     //   }
+
+//     const dayCount =
+//       duration === "half"
+//         ? 0.5
+//         : Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+
+//     // ✅ Check balance before allowing
+//     if (leaveType === "SL" && employee.sickLeaveBalance < dayCount) {
+//       return res.status(400).json({
+//         error: "No Sick Leave balance available. Please apply for LWP.",
+//       });
+//     }
+//     if (leaveType === "CL" && employee.casualLeaveBalance < dayCount) {
+//       return res.status(400).json({
+//         error: "No Casual Leave balance available. Please apply for LWP.",
+//       });
+//     }
+
+//     // Create new leave request
+//     const leave = new Leave({
+//       employee: employeeId,
+//       leaveType,
+//       dateFrom,
+//       dateTo,
+//       duration,
+//       reason,
+//       reportingManager: reportingManagerId,
+//       status: "pending",
+//       appliedAt: new Date(),
+//     });
+
+//     await leave.save();
+
+//     // Notify reporting manager
+//     if (reportingManagerId) {
+//       await Notification.create({
+//         user: reportingManagerId,
+//         type: "Leave",
+//         message: `New leave request from ${employee.name} (${new Date(
+//           dateFrom,
+//         ).toDateString()} - ${new Date(dateTo).toDateString()})`,
+//         leaveRef: leave._id,
+//       });
+//     }
+
+//     // Notify all admins
+//     const admins = await User.find({
+//       role: { $in: ["admin", "hr", "ceo", "coo", "md"] },
+//     });
+//     for (let admin of admins) {
+//       await Notification.create({
+//         user: admin._id,
+//         type: "Leave",
+//         message: `New leave request from ${employee.name} (${new Date(
+//           dateFrom,
+//         ).toDateString()} - ${new Date(dateTo).toDateString()})`,
+//         leaveRef: leave._id,
+//       });
+//     }
+
+//     res.json({ message: "Leave applied successfully!", leave });
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+// Get latest notifications for a user
+
 app.post("/leave/apply", async (req, res) => {
   try {
     const {
@@ -1944,43 +2087,30 @@ app.post("/leave/apply", async (req, res) => {
     start.setHours(0, 0, 0, 0);
     end.setHours(0, 0, 0, 0);
 
-    //  // ✅ Check if leave already exists on same or overlapping date range
-    //   const overlappingLeave = await Leave.findOne({
-    //     employee: employeeId,
-    //     status: { $ne: "rejected" }, // ignore rejected
-    //     $or: [
-    //       {
-    //         dateFrom: { $lte: end },
-    //         dateTo: { $gte: start },
-    //       },
-    //     ],
-    //   });
-
-    //   if (overlappingLeave) {
-    //     return res.status(400).json({
-    //       error:
-    //         "You already have a leave applied for one or more of these dates.",
-    //     });
-    //   }
-
     const dayCount =
       duration === "half"
         ? 0.5
         : Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+    if (duration === "half" && dateFrom !== dateTo) {
+      return res.status(400).json({
+        error: "⚠️ Half-day leave can only be applied for a single day.",
+      });
+    }
 
-    // ✅ Check balance before allowing
+    // ✅ Check leave balance
     if (leaveType === "SL" && employee.sickLeaveBalance < dayCount) {
       return res.status(400).json({
         error: "No Sick Leave balance available. Please apply for LWP.",
       });
     }
+
     if (leaveType === "CL" && employee.casualLeaveBalance < dayCount) {
       return res.status(400).json({
         error: "No Casual Leave balance available. Please apply for LWP.",
       });
     }
 
-    // Create new leave request
+    // ✅ Create leave request
     const leave = new Leave({
       employee: employeeId,
       leaveType,
@@ -1988,29 +2118,47 @@ app.post("/leave/apply", async (req, res) => {
       dateTo,
       duration,
       reason,
-      reportingManager: reportingManagerId,
+      reportingManager: reportingManagerId || null,
       status: "pending",
       appliedAt: new Date(),
     });
 
     await leave.save();
 
-    // Notify reporting manager
+    // --------------------------------------------------
+    // 🔔 NOTIFICATION LOGIC (FIXED)
+    // --------------------------------------------------
+
+    let notifyUsers = [];
+
+    // 1️⃣ If manager exists → notify manager
     if (reportingManagerId) {
+      notifyUsers.push(reportingManagerId);
+    }
+    // 2️⃣ Else → notify default admin
+    else {
+      const defaultAdmin = await User.findOne({ role: "admin" });
+      if (defaultAdmin) notifyUsers.push(defaultAdmin._id);
+    }
+
+    // 🔔 Notify manager OR fallback admin
+    for (let userId of notifyUsers) {
       await Notification.create({
-        user: reportingManagerId,
+        user: userId,
         type: "Leave",
         message: `New leave request from ${employee.name} (${new Date(
           dateFrom,
         ).toDateString()} - ${new Date(dateTo).toDateString()})`,
         leaveRef: leave._id,
+        triggeredByRole: "EMPLOYEE", // ✅ ENUM MATCH
       });
     }
 
-    // Notify all admins
+    // 3️⃣ Notify all admins (optional but kept)
     const admins = await User.find({
       role: { $in: ["admin", "hr", "ceo", "coo", "md"] },
     });
+
     for (let admin of admins) {
       await Notification.create({
         user: admin._id,
@@ -2019,8 +2167,11 @@ app.post("/leave/apply", async (req, res) => {
           dateFrom,
         ).toDateString()} - ${new Date(dateTo).toDateString()})`,
         leaveRef: leave._id,
+        triggeredByRole: "EMPLOYEE",
       });
     }
+
+    // --------------------------------------------------
 
     res.json({ message: "Leave applied successfully!", leave });
   } catch (err) {
@@ -2029,7 +2180,6 @@ app.post("/leave/apply", async (req, res) => {
   }
 });
 
-// Get latest notifications for a user
 app.get("/notifications/:userId", async (req, res) => {
   try {
     const notifications = await Notification.find({ user: req.params.userId })
@@ -2104,7 +2254,7 @@ app.get("/leave/manager/:managerId", async (req, res) => {
 // 2. Get My Leaves (Employee)
 app.get("/leave/my/:employeeId", async (req, res) => {
   try {
-    const leaves = await Leave.find({ employee: req.params.employeeId }).sort({
+    const leaves = await Leave.find({ employee: req.params.employeeId }).populate("approvedBy", "name role").sort({
       date: -1,
     });
     res.json(leaves);
@@ -2119,6 +2269,7 @@ app.get("/leaves", async (req, res) => {
     const leaves = await Leave.find()
       .populate("employee", "name email employeeId department") // employee details
       .populate("reportingManager", "name email employeeId department") // manager details
+      .populate("approvedBy", "name role") //Added by Rutuja
       .sort({ date: -1 });
 
     res.json(leaves);
@@ -2135,6 +2286,7 @@ app.get("/leaves/manager/:managerId", async (req, res) => {
     const leaves = await Leave.find({ reportingManager: managerId })
       .populate("employee", "name email employeeId department")
       .populate("reportingManager", "name email employeeId department") // optional
+      .populate("approvedBy", "name role") //Added by Rutuja
       .sort({ createdAt: -1 });
 
     res.json(leaves);
@@ -2518,6 +2670,7 @@ app.put("/leave/:leaveId/status", async (req, res) => {
         leave.dateTo,
       ).toDateString()}) has been ${status}.`,
       leaveRef: leave._id,
+      triggeredByRole: "EMPLOYEE",
     });
 
     // 🔔 Notification for all admins
@@ -2534,6 +2687,7 @@ app.put("/leave/:leaveId/status", async (req, res) => {
           leave.dateTo,
         ).toDateString()}) has been ${status} by ${role}.`,
         leaveRef: leave._id,
+        triggeredByRole: "HR",
       });
     }
 
@@ -3122,6 +3276,41 @@ app.post("/attendance/regularization/apply", async (req, res) => {
         .status(400)
         .json({ error: "Invalid check-in or check-out time" });
     }
+    //Added by Jaicy
+   // Validation 1: check-in < check-out
+    if (checkInDate >= checkOutDate) {
+      return res
+        .status(400)
+        .json({ error: "Check-in time must be earlier than check-out time" });
+    }
+
+    // Validation 2: both within 9:00 AM – 6:00 PM IST
+    function isWithinWorkingHours(dateObj) {
+      const hours = dateObj.getHours(); // in UTC, already converted from IST
+      const minutes = dateObj.getMinutes();
+      const totalMinutes = hours * 60 + minutes;
+
+      const workStart = 9 * 60; // 9:00 AM IST → 3:30 AM UTC
+      const workEnd = 18 * 60; // 6:00 PM IST → 12:30 PM UTC
+
+      return totalMinutes >= workStart && totalMinutes <= workEnd;
+    }
+
+    if (!isWithinWorkingHours(checkInDate) || !isWithinWorkingHours(checkOutDate)) {
+      return res.status(400).json({
+        error: "Check-in and check-out times must be within 9:00 AM to 6:00 PM",
+      });
+    }
+
+    // Validation 3: Reason ≤ 20 words
+      if (reason) {
+        const wordCount = reason.trim().split(/\s+/).length;
+        if (wordCount > 10) {
+          return res.status(400).json({
+            error: "Reason cannot exceed 20 words",
+          });
+        }
+      }
 
     const employee = await User.findById(employeeId);
     if (!employee) return res.status(404).json({ error: "Employee not found" });
@@ -3161,6 +3350,7 @@ app.post("/attendance/regularization/apply", async (req, res) => {
           employee.name
         } for ${targetDate.toDateString()}`,
         regularizationRef: attendance._id,
+        triggeredByRole: "EMPLOYEE",
       });
     }
 
@@ -3175,6 +3365,7 @@ app.post("/attendance/regularization/apply", async (req, res) => {
           employee.name
         } for ${targetDate.toDateString()}`,
         regularizationRef: attendance._id,
+        triggeredByRole: "HR",
       });
     }
 
@@ -3235,6 +3426,7 @@ app.put("/attendance/regularization/:id/status", async (req, res) => {
       type: "Regularization",
       message: `Your regularization request for ${attendance.date.toDateString()} has been ${status}.`,
       regularizationRef: attendance._id,
+      triggeredByRole: "HR",
     });
 
     res.json({ message: "Status updated successfully", attendance });
@@ -3368,6 +3560,7 @@ app.put(
         type: "Regularization",
         message: `Your regularization request for ${record.date.toDateString()} has been ${status}.`,
         regularizationRef: record._id,
+        triggeredByRole: "HR",
       });
 
       // 2️⃣ Notify admin(s)
@@ -3382,6 +3575,7 @@ app.put(
             record.employee.name
           }'s regularization request for ${record.date.toDateString()} has been ${status}.`,
           regularizationRef: record._id,
+          triggeredByRole: "HR",
         });
       }
 
@@ -4179,6 +4373,7 @@ app.post(
         typeOfTask,
         dateOfTaskAssignment,
         dateOfExpectedCompletion,
+        estimatedHours,
         progressPercentage,
         comments,
         status,
@@ -4196,6 +4391,25 @@ app.post(
         return res.status(400).json({ message: "Type of task is required" });
       if (!status)
         return res.status(400).json({ message: "Status is required" });
+      if (
+        estimatedHours !== undefined &&
+        (isNaN(estimatedHours) || Number(estimatedHours) < 0)
+      ) {
+        return res
+          .status(400)
+          .json({ message: "Estimated hours must be >= 0" });
+      }
+
+      const workingDays = getValidWorkingDays(
+        dateOfTaskAssignment,
+        dateOfExpectedCompletion,
+      );
+      const safeWorkingDays = workingDays > 0 ? workingDays : 1;
+
+      const dailyEstimatedHours =
+        estimatedHours !== undefined
+          ? Number(estimatedHours) / safeWorkingDays
+          : 0;
 
       // if (!createdBy) return res.status(400).json({ message: "Creator ID (createdBy) is required" });
 
@@ -4213,6 +4427,7 @@ app.post(
         dateOfExpectedCompletion,
         progressPercentage,
         comments,
+        estimatedHours: Number(estimatedHours),
         status,
         documents: req.files?.documents?.[0]?.filename || null,
         createdBy: req.user._id,
@@ -4253,7 +4468,11 @@ app.post(
       }
       // -------------------------------
 
-      const newTask = await Task.create(taskData);
+      const newTask = await Task.create({
+        ...taskData,
+        workingDays,
+        dailyEstimatedHours,
+      });
       const populatedTask = await Task.findById(newTask._id)
         .populate("assignedTo", "name email department")
         .populate("status", "name")
@@ -4352,6 +4571,7 @@ app.put(
         taskDescription,
         dateOfTaskAssignment,
         dateOfExpectedCompletion,
+        estimatedHours,
         progressPercentage,
         assignedTo,
         status,
@@ -4378,12 +4598,28 @@ app.put(
           statusId = statusName._id;
         }
       }
+      //Added  by jaicy
+      const workingDays = getValidWorkingDays(
+        dateOfTaskAssignment || existingTask.dateOfTaskAssignment,
+        dateOfExpectedCompletion || existingTask.dateOfExpectedCompletion,
+      );
+      const safeWorkingDays = workingDays > 0 ? workingDays : 1;
+
+      const finalEstimatedHours =
+        estimatedHours !== undefined
+          ? Number(estimatedHours)
+          : existingTask.estimatedHours || 0;
+
+      const dailyEstimatedHours = finalEstimatedHours / safeWorkingDays;
 
       const updateData = {
         taskName,
         department,
         typeOfTask,
         taskDescription,
+        estimatedHours: finalEstimatedHours,
+        workingDays,
+        dailyEstimatedHours,
         dateOfTaskAssignment:
           dateOfTaskAssignment || existingTask.dateOfTaskAssignment,
         dateOfExpectedCompletion:
@@ -6362,9 +6598,9 @@ async function autoSendAnniversaryEmail(user) {
 ////--------------------------- Anniversary--------------------------------//
 
 // ✅ Create Policy (POST)
-app.post("/policy/create", async (req, res) => {
+app.post("/policy/create", upload.single("pdf"), async (req, res) => {
   try {
-    const { title, description, image } = req.body;
+    const { title, description } = req.body; //remove image from this ---------shivani
 
     // Validation
     if (!title || !description) {
@@ -6378,7 +6614,7 @@ app.post("/policy/create", async (req, res) => {
     const policy = new Policy({
       title,
       description,
-      image,
+      image: req.file ? req.file.filename : null, // add this line ------shivani
     });
 
     const savedPolicy = await policy.save();
@@ -6387,6 +6623,74 @@ app.post("/policy/create", async (req, res) => {
       success: true,
       message: "Policy created successfully",
       data: savedPolicy,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+//Added by Shivani
+app.put("/policy/update/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, image } = req.body;
+
+    if (!title || !description) {
+      return res.status(400).json({
+        success: false,
+        message: "Title and description are required",
+      });
+    }
+
+    const updatedPolicy = await Policy.findByIdAndUpdate(
+      id,
+      { title, description, image },
+      { new: true },
+    );
+
+    if (!updatedPolicy) {
+      return res.status(404).json({
+        success: false,
+        message: "Policy not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Policy updated successfully",
+      data: updatedPolicy,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+// DELETE policy
+app.delete("/policy/delete/:id", async (req, res) => {
+  console.log("DELETE policy route loaded");
+  try {
+    const { id } = req.params;
+
+    const deletedPolicy = await Policy.findByIdAndDelete(id);
+
+    if (!deletedPolicy) {
+      return res.status(404).json({
+        success: false,
+        message: "Policy not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Policy deleted successfully",
     });
   } catch (error) {
     res.status(500).json({
@@ -6417,26 +6721,49 @@ app.get("/policy/get", async (req, res) => {
 });
 
 //HR Feedback Rutuja
-const canSendMessage = (senderRole, receiverRole) => {
+const canSendMessage = (
+  senderRole,
+  receiverRole,
+  senderId,
+  receiverReportingManager,
+) => {
   const sender = senderRole.toLowerCase();
   const receiver = receiverRole.toLowerCase();
-
+  // 1. HR can send to anyone
   if (sender === "hr") {
     return true;
   }
 
-  if (sender === "employee" || sender === "manager") {
-    return receiver === "hr" || receiver === "admin";
-  }
-
   if (sender === "admin") {
     return true;
+  }
+  //  4. NEW: Employee can send to their Manager
+  if (sender === "employee" && receiver === "manager") {
+    return true;
+  }
+  //  5. NEW: Manager can send to their direct reports
+  if (
+    sender === "manager" &&
+    receiverReportingManager &&
+    receiverReportingManager.toString() === senderId.toString()
+  ) {
+    return true;
+  }
+
+  // 3. Employee/Manager can send to HR/Admin
+  if (sender === "employee" || sender === "manager") {
+    return receiver === "hr" || receiver === "admin";
   }
 };
 
 app.post("/feedback/send", authenticate, async (req, res) => {
   try {
     const { receiverId, title, message } = req.body;
+
+    const sender = await User.findById(req.user._id);
+    const receiver = await User.findById(receiverId).select(
+      "role name reportingManager",
+    ); ///dip code
 
     if (!receiverId || !title || !message) {
       return res.status(400).json({
@@ -6445,9 +6772,6 @@ app.post("/feedback/send", authenticate, async (req, res) => {
       });
     }
 
-    const sender = await User.findById(req.user._id);
-    const receiver = await User.findById(receiverId);
-
     if (!receiver) {
       return res.status(404).json({
         success: false,
@@ -6455,12 +6779,20 @@ app.post("/feedback/send", authenticate, async (req, res) => {
       });
     }
 
-    if (!canSendMessage(sender.role, receiver.role)) {
+    if (
+      !canSendMessage(
+        sender.role,
+        receiver.role,
+        req.user._id,
+        receiver.reportingManager,
+      )
+    ) {
       const senderRole = sender.role.toLowerCase();
       if (senderRole === "employee" || senderRole === "manager") {
         return res.status(403).json({
           success: false,
-          message: "You can only send feedback to HR",
+          message:
+            "You can only send feedback to HR, your manager, or your direct reports",
         });
       } else {
         return res.status(403).json({
@@ -6512,6 +6844,7 @@ app.post("/feedback/send", authenticate, async (req, res) => {
         message: `You have received new feedback from ${sender.name} (${sender.role})`,
         feedbackRef: feedback._id,
         isRead: false,
+        triggeredByRole: sender.role.toUpperCase(),
         createdAt: new Date(),
       });
     } catch (error) {
@@ -6597,6 +6930,8 @@ app.put("/feedback/view/:feedbackId", authenticate, async (req, res) => {
         message: `Your feedback to ${receiver.name}(${receiver.role})has been viewed`,
         feedbackRef: feedback._id,
         isRead: false,
+        triggeredByRole: receiver.role.toUpperCase(),
+
         createdAt: new Date(),
       });
     } catch (notificationError) {
@@ -7526,8 +7861,7 @@ app.get("/bench-employees", authenticate, async (req, res) => {
     // FOR ADMIN/HR/CEO/COO/MD → fetch all employees
     if (["admin", "ceo", "hr", "coo", "md"].includes(role)) {
       employees = await User.find(
-
-        { role: ["employee"] ,isDeleted: { $ne: true }}, // only employees added harshada
+        { role: ["employee"], isDeleted: { $ne: true } }, // only employees added harshada
         {
           name: 1,
           designation: 1,
@@ -7621,7 +7955,6 @@ app.get("/emp/info/:empId", async (req, res) => {
 app.post("/resignation/apply", authenticate, async (req, res) => {
   try {
     const { reason, comments } = req.body;
-    const employeeId = req.user.employeeId;
 
     if (!reason) {
       return res.status(400).json({ message: "Reason is required" });
@@ -7677,27 +8010,45 @@ app.post("/resignation/apply", authenticate, async (req, res) => {
     });
 
     await resignation.save();
+    //Added by Rutuja for notification
+    try {
+      const adminUsers = await User.find({
+        role: { $in: ["hr", "admin", "ceo", "coo", "md"] },
+      });
 
-    const admins = await User.find({
-      role: { $in: ["hr", "admin", "ceo", "coo", "md"] },
-    });
-
-    for (const admin of admins) {
-      await Notification.create({
+      const adminNotifications = adminUsers.map((admin) => ({
         user: admin._id,
         type: "Resignation",
-        message: `${emp.name} has applied for resignation.`,
+        message: `${emp.name} (${emp.employeeId}) has applied for resignation.`,
+        isRead: false,
         createdAt: new Date(),
-      });
-    }
+        triggeredBy: emp._id,
+        triggeredByRole: emp.role,
+      }));
 
-    if (emp.reportingManager) {
-      await Notification.create({
-        user: emp.reportingManager,
-        type: "Resignation",
-        message: `${emp.name} has applied for resignation.`,
-        createdAt: new Date(),
-      });
+      let managerNotification = null;
+      if (emp.reportingManager) {
+        managerNotification = {
+          user: emp.reportingManager,
+          type: "Resignation",
+          message: `${emp.name} (${emp.employeeId}) has applied for resignation.`,
+          isRead: false,
+          createdAt: new Date(),
+          triggeredBy: emp._id,
+          triggeredByRole: emp.role,
+        };
+      }
+
+      const notificationsToInsert = [...adminNotifications];
+      if (managerNotification) {
+        notificationsToInsert.push(managerNotification);
+      }
+
+      if (notificationsToInsert.length > 0) {
+        await Notification.insertMany(notificationsToInsert);
+      }
+    } catch (notificationError) {
+      console.error("Notification creation error:", notificationError);
     }
 
     res.json({
@@ -7777,7 +8128,7 @@ app.put("/resignation/:resignationId", authenticate, async (req, res) => {
 
     const resignation = await Resignation.findOne({
       resignationId: req.params.resignationId,
-    });
+    }).populate("employee", "name employeeId email");
 
     if (!resignation)
       return res.status(404).json({ message: "Resignation not found" });
@@ -7786,6 +8137,7 @@ app.put("/resignation/:resignationId", authenticate, async (req, res) => {
       return res.status(400).json({ message: "Resignation already processed" });
     }
 
+    const previousStatus = resignation.status;
     if (action === "approve") {
       if (!lastWorkingDay) {
         return res
@@ -7810,6 +8162,24 @@ app.put("/resignation/:resignationId", authenticate, async (req, res) => {
     await resignation.save();
 
     await resignation.populate("approvedBy", "name role");
+
+    if (resignation.employee && resignation.status !== previousStatus) {
+      try {
+        const employeeNotification = {
+          user: resignation.employee._id,
+          type: "Resignation",
+          message: `Your resignation ${resignation.status} by ${req.user.role}`,
+          isRead: false,
+          createdAt: new Date(),
+          triggeredBy: req.user._id,
+          triggeredByRole: req.user.role || "Approver",
+        };
+
+        await Notification.create(employeeNotification);
+      } catch (notificationError) {
+        console.error("Notification creation error:", notificationError);
+      }
+    }
 
     res.json({
       message: `Resignation ${action}ed successfully`,
@@ -7945,7 +8315,8 @@ app.get("/resignation/manager/:managerId", async (req, res) => {
       (r) =>
         r.employee &&
         r.employee.reportingManager &&
-        r.employee.reportingManager._id.toString() === req.params.managerId,
+        r.employee.reportingManager._id.toString() === req.params.managerId &&
+        r.employee.role !== "manager",
     );
 
     const result = managerResignations.map((r) => ({
@@ -8010,6 +8381,427 @@ app.get("/allEmp", async (req, res) => {
   }
 });
 
+// ================= HR CREATE SCHEDULE INTERVIEW (Jayashree 6th jan)=================
+
+app.post(
+  "/schedule-interview",
+  resumeUpload.single("resume"), // ✅ multer middleware
+  authenticate,
+  async (req, res) => {
+    console.log("FILE 👉", req.file); // 🔥 MUST PRINT
+    if (req.user.role !== "hr") {
+      return res.status(403).json({ message: "Forbidden: hr only" });
+    }
+    try {
+      const interviewData = {
+        candidateName: req.body.candidateName,
+        email: req.body.email,
+        role: req.body.role,
+        date: req.body.date,
+        startTime: req.body.startTime,
+        endTime: req.body.endTime,
+        duration: req.body.duration,
+        interviewType: req.body.interviewType,
+        interviewerId: new mongoose.Types.ObjectId(req.body.interviewerId),
+        interviewerName: req.body.interviewerName,
+        link: req.body.interviewType === "Online" ? req.body.link : "",
+        status: req.body.status,
+        comment: req.body.comment || "",
+        resumeUrl: req.file ? `/uploads/${req.file.filename}` : null,
+      };
+      if (interviewData.interviewType === "Online" && !interviewData.link) {
+        return res.status(400).json({
+          success: false,
+          message: "Interview link is required for online interviews",
+        });
+      }
+      // 🔐 BACKEND SAFETY VALIDATION
+      const start = new Date(`1970-01-01T${interviewData.startTime}`);
+      const end = new Date(`1970-01-01T${interviewData.endTime}`);
+
+      if (end <= start) {
+        return res.status(400).json({
+          success: false,
+          message: "End time must be after start time",
+        });
+      }
+      // ✅ ADD THIS LINE (VERY IMPORTANT)
+      // interviewData.interviewer = interviewData.employeeId;
+      const interview = new Interview(interviewData);
+      await interview.save();
+
+      // 🔔 CREATE NOTIFICATION (MANAGER / EMPLOYEE)
+      await Notification.create({
+        user: interview.interviewerId, // 👈 SAME ID
+        type: "Interview",
+        message: `New interview scheduled for ${interview.candidateName} on ${interview.date}`,
+        interviewRef: interview._id,
+        triggeredByRole: req.user.role,
+      });
+
+      res.status(201).json({
+        success: true,
+        message: "Interview scheduled successfully",
+        interview,
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        success: false,
+        message: "Failed to schedule interview",
+        error: err.message,
+      });
+    }
+  },
+);
+
+// ================= GET ALL INTERVIEWS =================
+app.get("/interviews", async (req, res) => {
+  try {
+    const interviews = await Interview.find().sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      interviews,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch interviews",
+    });
+  }
+});
+
+// get Schedule Interview API for Employee Role
+app.get("/interviews/employee/:employeeId", authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== "employee") {
+      return res.status(403).json({ message: "Forbidden: employees only" });
+    }
+
+    const { employeeId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+      return res.status(400).json({ message: "Invalid employeeId" });
+    }
+
+    const interviews = await Interview.find(
+      { interviewerId: employeeId }, // 🔥 CORE MATCH
+      {
+        interviewId: 1,
+        candidateName: 1,
+        email: 1,
+        role: 1,
+        resumeUrl: 1,
+        date: 1,
+        startTime: 1,
+        endTime: 1,
+        duration: 1,
+        interviewType: 1,
+        interviewerId: 1,
+        interviewerName: 1,
+        link: 1,
+        status: 1,
+        comment: 1,
+      },
+    ).sort({ date: 1 });
+
+    res.status(200).json(interviews);
+  } catch (error) {
+    console.error("Employee interview fetch error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// get Schedule Interview API for Manager Role
+app.get("/interviews/manager/:managerId", authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== "manager") {
+      return res.status(403).json({ message: "Forbidden: employees only" });
+    }
+
+    // ✅ SAME STYLE AS EMPLOYEE
+    const { managerId } = req.params;
+
+    // 🛡️ ObjectId validation
+    if (!mongoose.Types.ObjectId.isValid(managerId)) {
+      return res.status(400).json({ message: "Invalid managerId" });
+    }
+
+    // 🔥 INTERVIEWSID HI USE KARNA HAI
+    const interviews = await Interview.find(
+      { interviewerId: managerId }, // 🔥 SAME CORE LOGIC
+      {
+        interviewId: 1,
+        candidateName: 1,
+        email: 1,
+        role: 1,
+        resumeUrl: 1,
+        date: 1,
+        startTime: 1,
+        endTime: 1,
+        duration: 1,
+        interviewType: 1,
+        interviewerId: 1,
+        interviewerName: 1,
+        link: 1,
+        status: 1,
+        comment: 1,
+      },
+    ).sort({ date: 1 });
+
+    res.status(200).json(interviews);
+  } catch (error) {
+    console.error("Manager interview fetch error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// DELETE interview 10th jan
+app.delete("/interviewsDelete/:id", async (req, res) => {
+  console.log("DELETE HIT", req.params.id);
+  try {
+    const { id } = req.params;
+
+    const interview = await Interview.findById(id);
+    if (!interview) {
+      return res.status(404).json({
+        success: false,
+        message: "Interview not found",
+      });
+    }
+
+    // ❌ ON-GOING interview delete nahi hoga
+    if (interview.status === "On-going") {
+      return res.status(400).json({
+        success: false,
+        message: "On-going interview cannot be deleted",
+      });
+    }
+
+    await Interview.findByIdAndDelete(id);
+
+    res.json({
+      success: true,
+      message: "Interview deleted successfully",
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete interview",
+    });
+  }
+});
+
+//  UPDATE Action Button for Scheduled Interview: 12th jan
+//const upload = require("../middleware/resumeUpload"); // ya jahan tumhara multer middleware hai
+
+app.put(
+  "/interviewsUpdate/:id",
+  authenticate,
+  resumeUpload.single("resume"),
+  async (req, res) => {
+    console.log("PUT HIT", req.params.id);
+    console.log("BODY:", req.body);
+    try {
+      const { id } = req.params;
+
+      const interview = await Interview.findById(id);
+      const oldInterviewerId = interview.interviewerId?.toString();
+      if (!interview) {
+        return res.status(404).json({
+          success: false,
+          message: "Interview not found",
+        });
+      }
+
+      // ❌ ON-GOING interview update nahi hoga
+      if (interview.status === "On-going") {
+        return res.status(400).json({
+          success: false,
+          message: "On-going interview cannot be updated",
+        });
+      }
+      // Update text fields
+      if (req.body.candidateName)
+        interview.candidateName = req.body.candidateName;
+      if (req.body.email) interview.email = req.body.email;
+      if (req.body.role) interview.role = req.body.role;
+      if (req.body.date) interview.date = req.body.date;
+      if (req.body.startTime) interview.startTime = req.body.startTime;
+      if (req.body.endTime) interview.endTime = req.body.endTime;
+      if (req.body.duration) interview.duration = req.body.duration;
+      if (req.body.interviewType)
+        interview.interviewType = req.body.interviewType;
+      if (req.body.interviewerId)
+        interview.interviewerId = req.body.interviewerId;
+      if (req.body.interviewerName)
+        interview.interviewerName = req.body.interviewerName;
+      if (req.body.link) interview.link = req.body.link;
+      if (req.body.status) interview.status = req.body.status;
+      if (req.body.comment) interview.comment = req.body.comment;
+      // 🔥 Update resume only if a new file is uploaded
+      if (req.file) {
+        interview.resumeUrl = `/uploads/${req.file.filename}`;
+      }
+      if (interview.interviewType === "Online") {
+        if (!req.body.link && !interview.link) {
+          return res.status(400).json({
+            success: false,
+            message: "Interview link is required for online interviews",
+          });
+        }
+        if (req.body.link) interview.link = req.body.link;
+      } else {
+        interview.link = ""; // Offline → clear link
+      }
+
+      // ⏱️ TIME VALIDATION
+      if (interview.startTime && interview.endTime) {
+        const start = new Date(`1970-01-01T${interview.startTime}`);
+        const end = new Date(`1970-01-01T${interview.endTime}`);
+
+        if (end <= start) {
+          return res.status(400).json({
+            success: false,
+            message: "End time must be after start time",
+          });
+        }
+      }
+
+      await interview.save();
+
+      // 🔔 INTERVIEWER CHANGE NOTIFICATION
+      if (
+        req.body.interviewerId &&
+        req.body.interviewerId !== oldInterviewerId
+      ) {
+        await Notification.create({
+          user: req.body.interviewerId, // new interviewer
+          type: "Interview",
+          message: `You have been assigned a new interview for ${interview.candidateName} on ${new Date(interview.date).toLocaleDateString()}`,
+          interviewRef: interview._id,
+          triggeredByRole: req.user.role,
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Interview updated successfully",
+        data: interview,
+      });
+    } catch (err) {
+      console.error(err);
+      res
+        .status(500)
+        .json({ success: false, message: "Failed to update interview" });
+    }
+  },
+);
+
+// UPDATE interview status & comment (EMPLOYEE)
+app.put("/interviews/employee/:interviewId", authenticate, async (req, res) => {
+  try {
+    // 🔐 ROLE CHECK
+    if (req.user.role !== "employee") {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const { interviewId } = req.params;
+    const { status, comment } = req.body;
+
+    // ✅ ID VALIDATION
+    if (!mongoose.Types.ObjectId.isValid(interviewId)) {
+      return res.status(400).json({ message: "Invalid interviewId" });
+    }
+
+    // 🔍 FIND INTERVIEW FIRST
+    const interview = await Interview.findById(interviewId);
+
+    if (!interview) {
+      return res.status(404).json({ message: "Interview not found" });
+    }
+
+    if (interview.status === "On-going") {
+      return res.status(400).json({
+        message: "On-going interview cannot be updated",
+      });
+    }
+    // ✅ ONLY ALLOWED FIELDS
+    const updateData = {};
+    if (status) updateData.status = status;
+    if (comment !== undefined) updateData.comment = comment;
+
+    // 🔥 UPDATE
+    const updatedInterview = await Interview.findByIdAndUpdate(
+      interviewId,
+      updateData,
+      { new: true },
+    );
+
+    res.status(200).json({
+      message: "Interview updated successfully",
+      data: updatedInterview,
+    });
+  } catch (error) {
+    console.error("Employee interview update error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// UPDATE interview status & comment (MANAGER)
+app.put(
+  "/interviews/managerUpdate/:interviewId",
+  authenticate,
+  async (req, res) => {
+    try {
+      // 🔐 ROLE CHECK
+      if (req.user.role !== "manager") {
+        return res.status(403).json({ message: "Access denied" });
+      }
+
+      const { interviewId } = req.params;
+      const { status, comment } = req.body;
+
+      // ✅ ID VALIDATION
+      if (!mongoose.Types.ObjectId.isValid(interviewId)) {
+        return res.status(400).json({ message: "Invalid interviewId" });
+      }
+
+      // 🔍 FIND INTERVIEW FIRST
+      const interview = await Interview.findById(interviewId);
+
+      if (!interview) {
+        return res.status(404).json({ message: "Interview not found" });
+      }
+
+      // ❌ BLOCK ON-GOING UPDATE
+      if (interview.status === "On-going") {
+        return res.status(400).json({
+          message: "On-going interview cannot be updated",
+        });
+      }
+
+      // ✅ ONLY ALLOWED FIELDS
+      if (status) interview.status = status;
+      if (comment !== undefined) interview.comment = comment;
+
+      await interview.save();
+
+      res.status(200).json({
+        message: "Interview updated successfully",
+        data: interview,
+      });
+    } catch (error) {
+      console.error("Manager interview update error:", error);
+      res.status(500).json({ message: "Server error" });
+    }
+  },
+);
+
+// jayshree interview end
 // ================= HR CREATE SCHEDULE INTERVIEW (Jayashree 6th jan)=================
 
 app.post(
@@ -8389,7 +9181,489 @@ app.put("/interviews/managerUpdate/:interviewId", async (req, res) => {
   }
 });
 
+//Performance API Added by Jayshree
+// Crete Performnace at HR (jayu 19th jan)
+// Crete Performnace at HR (jayu 19th jan)
+app.post("/performance", async (req, res) => {
+  try {
+    const {
+      employeeId,
+      employeeName,
+      department,
+      manager,
+      managerId,
+      durationType,
+      durationDate,
+      description,
+    } = req.body;
+
+    // Required field validation
+    if (
+      !employeeId ||
+      !employeeName ||
+      !department ||
+      !manager ||
+      !durationType ||
+      !durationDate
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Required fields are missing",
+      });
+    }
+
+    // 🔍 FIND USER USING employeeId (IMPORTANT PART)
+    const user = await User.findOne({ employeeId });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "Employee not found",
+      });
+    }
+
+    // optional: ensure employee role
+    if (user.role !== "employee") {
+      return res.status(400).json({
+        success: false,
+        message: "Selected user is not an employee",
+      });
+    }
+
+    // Validate managerId if provided
+    let validManagerId = null;
+    if (managerId) {
+      if (!mongoose.Types.ObjectId.isValid(managerId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid managerId",
+        });
+      }
+      validManagerId = managerId;
+    }
+
+    // Date parsing
+    let parsedDate;
+    if (durationType === "Monthly") {
+      parsedDate = new Date(`${durationDate}-01`);
+    } else {
+      parsedDate = new Date(durationDate);
+    }
+
+    if (isNaN(parsedDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid durationDate",
+      });
+    }
+
+    //  CREATE PERFORMANCE (userId backend se set)
+    const performance = new Performance({
+      userId: user._id, // 👈 UI se nahi aaya
+      employeeId: employeeId.toString(),
+      employeeName,
+      department,
+      manager,
+      managerId: validManagerId,
+      durationType,
+      durationDate: parsedDate,
+      description,
+    });
+
+    await performance.save();
+
+    res.status(201).json({
+      success: true,
+      message: "Performance request created successfully",
+      data: performance,
+    });
+  } catch (error) {
+    console.error("Performance create error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+// Get all performance requests for HR
+app.get("/performance/getrequests", async (req, res) => {
+  try {
+    const list = await Performance.find()
+      .populate("approvedBy", "name email")
+      .populate("rejectedBy", "name email")
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: list,
+    });
+  } catch (error) {
+    console.error("Fetch performance error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch performance requests",
+    });
+  }
+});
+
+// Delete Performance Request (HR)(Jayu 20 Jan)
+app.delete("/performance/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    //  check record exists
+    const performance = await Performance.findById(id);
+
+    if (!performance) {
+      return res.status(404).json({
+        success: false,
+        message: "Performance request not found",
+      });
+    }
+
+    //  delete
+    await Performance.findByIdAndDelete(id);
+
+    res.status(200).json({
+      success: true,
+      message: "Performance request deleted successfully",
+    });
+  } catch (error) {
+    console.error("Delete performance error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete performance request",
+    });
+  }
+});
+
+// getPerformance API for Manager Role
+app.get("/performance/manager/:managerId", async (req, res) => {
+  try {
+    const { managerId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(managerId)) {
+      return res.status(400).json({ message: "Invalid managerId" });
+    }
+
+    const performances = await Performance.find(
+      { managerId }, // fetch only records for this manager
+      {
+        // _id: 1,
+        employeeId: 1,
+        requestId: 1,
+        employeeName: 1,
+        manager: 1,
+        department: 1,
+        durationType: 1,
+        durationDate: 1,
+        rating: 1,
+        status: 1,
+        recommendation: 1,
+        adminStatus: 1,
+        approvedBy: 1,
+        rejectedBy: 1,
+        approvedAt: 1,
+        rejectedAt: 1,
+        description: 1,
+      },
+    )
+      .populate("approvedBy", "name email employeeId")
+      .populate("rejectedBy", "name email employeeId")
+      .sort({ createdAt: -1 });
+
+    res.status(200).json(performances);
+  } catch (error) {
+    console.error("Manager performance fetch error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// updatePerformance API for Manager Role(22nd Jan)
+app.put("/performance/:performanceId", async (req, res) => {
+  try {
+    const { performanceId } = req.params;
+    const { rating, status, recommendation } = req.body;
+
+    //  Validate performanceId
+    if (!mongoose.Types.ObjectId.isValid(performanceId)) {
+      return res.status(400).json({ message: "Invalid performanceId" });
+    }
+
+    //  Basic validation
+    if (!status || !recommendation) {
+      return res.status(400).json({
+        message: "Status and Recommendation are required",
+      });
+    }
+
+    //  Update only allowed fields
+    const updatedPerformance = await Performance.findByIdAndUpdate(
+      performanceId,
+      {
+        rating,
+        status,
+        recommendation,
+      },
+      {
+        new: true, //  return updated document
+        runValidators: true,
+      },
+    );
+
+    if (!updatedPerformance) {
+      return res.status(404).json({
+        message: "Performance record not found",
+      });
+    }
+
+    res.status(200).json({
+      message: "Performance updated successfully",
+      data: updatedPerformance,
+    });
+  } catch (error) {
+    console.error("Performance update error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// getPerformance API for Employee Role
+app.get("/performance/employee", async (req, res) => {
+  try {
+    const { userId, role } = req.query;
+
+    console.log("ROLE:", role);
+    console.log("USER ID:", userId);
+
+    // VALIDATION
+    if (!userId || !role) {
+      return res.status(400).json({
+        success: false,
+        message: "userId or role missing",
+      });
+    }
+
+    // ROLE CHECK
+    if (role.toUpperCase() !== "EMPLOYEE") {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied",
+      });
+    }
+
+    // ObjectId validation (important 🔒)
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId",
+      });
+    }
+
+    // FETCH ONLY LOGGED-IN EMPLOYEE DATA
+    const performances = await Performance.find({
+      userId: userId, // 👈 schema based
+    })
+      .populate("approvedBy", "name email employeeId")
+      .populate("rejectedBy", "name email employeeId")
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: performances,
+    });
+  } catch (error) {
+    console.error("Employee performance fetch error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+// GET ALL PERFORMANCE ( CEO, ADMIN, COO)
+app.get("/performance/all", async (req, res) => {
+  try {
+    const { role } = req.query;
+    if (!role) {
+      return res.status(400).json({ message: "Role missing" });
+    }
+
+    const normalizedRole = role.toUpperCase();
+
+    //  ROLE CHECK
+    const allowedRoles = ["CEO", "ADMIN", "COO"];
+
+    if (!allowedRoles.includes(normalizedRole)) {
+      return res.status(403).json({
+        message: "Access denied",
+      });
+    }
+
+    const performances = await Performance.find().sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: performances,
+    });
+  } catch (error) {
+    console.error("Fetch all performance error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 // jayshree interview end
+
+//Added by Rutuja Performance API
+
+app.get("/performance/admin/pending", authenticate, async (req, res) => {
+  try {
+    const userRole = req.user.role;
+
+    const allowedRoles = ["admin", "hr", "ceo", "coo", "md"];
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied",
+      });
+    }
+
+    const managerCompletedRequests = await Performance.find({
+      status: "Added",
+    })
+      .populate("approvedBy", "name email employeeId")
+      .populate("rejectedBy", "name email employeeId")
+      .sort({ createdAt: -1 });
+
+    const approvedCount = managerCompletedRequests.filter(
+      (r) => r.adminStatus === "approved",
+    ).length;
+    const rejectedCount = managerCompletedRequests.filter(
+      (r) => r.adminStatus === "rejected",
+    ).length;
+    const pendingCount = managerCompletedRequests.filter(
+      (r) => r.adminStatus === "pending" || !r.adminStatus,
+    ).length;
+
+    res.json({
+      success: true,
+      data: managerCompletedRequests,
+      count: managerCompletedRequests.length,
+      breakdown: {
+        approved: approvedCount,
+        rejected: rejectedCount,
+        pending: pendingCount,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+// Approve performance request
+app.post("/performance/:id/approve", authenticate, async (req, res) => {
+  try {
+    const performanceId = req.params.id;
+    const userId = req.user._id;
+    const userRole = req.user.role;
+    const userName = req.user.name;
+
+    const allowedRoles = ["admin", "hr", "ceo", "coo", "md"];
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied",
+      });
+    }
+
+    const performance = await Performance.findById(performanceId);
+    if (!performance) {
+      return res.status(404).json({
+        success: false,
+        message: "Performance not found",
+      });
+    }
+
+    if (performance.adminStatus !== "pending") {
+      return res.status(400).json({
+        success: false,
+        message: `Already ${performance.adminStatus}`,
+      });
+    }
+
+    performance.adminStatus = "approved";
+    performance.approvedBy = userId;
+    performance.approvedAt = new Date();
+    await performance.save();
+
+    res.json({
+      success: true,
+      message: "Performance approved",
+      data: performance,
+      approvedBy: userName,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+// Reject performance request
+app.post("/performance/:id/reject", authenticate, async (req, res) => {
+  try {
+    const performanceId = req.params.id;
+    const userId = req.user._id;
+    const userRole = req.user.role;
+    const userName = req.user.name;
+
+    const allowedRoles = ["admin", "hr", "ceo", "coo", "md"];
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied",
+      });
+    }
+
+    const performance = await Performance.findById(performanceId);
+    if (!performance) {
+      return res.status(404).json({
+        success: false,
+        message: "Performance not found",
+      });
+    }
+
+    if (performance.adminStatus !== "pending") {
+      return res.status(400).json({
+        success: false,
+        message: `Already ${performance.adminStatus}`,
+      });
+    }
+
+    performance.adminStatus = "rejected";
+    performance.rejectedBy = userId;
+    performance.rejectedAt = new Date();
+    await performance.save();
+
+    res.json({
+      success: true,
+      message: "Performance rejected",
+      data: performance,
+      rejectedBy: userName,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
 
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

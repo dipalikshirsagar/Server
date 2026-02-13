@@ -75,3 +75,31 @@ exports.getAnnouncements = async (req, res) => {
 };
 
 
+// DELETE Announcement added by samiksha
+exports.deleteAnnouncement = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const deletedAnnouncement = await Announcement.findByIdAndDelete(id);
+
+    if (!deletedAnnouncement) {
+      return res.status(404).json({
+        success: false,
+        message: "Announcement not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Announcement deleted successfully",
+    });
+  } catch (error) {
+    console.error("DELETE ANNOUNCEMENT ERROR:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+    });
+  }
+};
+
+

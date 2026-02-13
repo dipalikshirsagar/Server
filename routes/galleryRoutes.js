@@ -1,101 +1,12 @@
-// const express = require("express");
-// const router = express.Router();
-// const multer = require("multer");
-
-// const { cloudinary, storage } = require("../cloudinary");
-// const Gallery = require("../models/GallerySchema");
-
-// const upload = multer({ storage });
-
-// /* ================= UPLOAD ================= */
-// router.post("/upload", upload.array("files"), async (req, res) => {
-//   try {
-//     const items = await Promise.all(
-//       req.files.map((file, index) => {
-//         const type = file.mimetype.startsWith("image")
-//           ? "image"
-//           : file.mimetype.startsWith("video")
-//           ? "video"
-//           : "pdf";
-
-//         return Gallery.create({
-//           title: req.body.titles[index],
-//           description: req.body.descriptions[index],
-//           type,
-//           url: file.path,
-//           public_id: file.filename,
-//         });
-//       })
-//     );
-
-//     res.status(200).json(items);
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).json({ message: "Upload failed" });
-//   }
-// });
-
-// /* ================= GET ================= */
-// router.get("/", async (req, res) => {
-//   try {
-//     const items = await Gallery.find().sort({ createdAt: -1 });
-//     res.json(items);
-//   } catch (err) {
-//     res.status(500).json({ message: "Fetch failed" });
-//   }
-// });
-
-// /* ================= UPDATE (EDIT) ================= */
-// router.put("/:id", async (req, res) => {
-//   try {
-//     const { title, description } = req.body;
-
-//     const updatedItem = await Gallery.findByIdAndUpdate(
-//       req.params.id,
-//       { title, description },
-//       { new: true }
-//     );
-
-//     if (!updatedItem) {
-//       return res.status(404).json({ message: "Not found" });
-//     }
-
-//     res.json(updatedItem);
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).json({ message: "Update failed" });
-//   }
-// });
-
-// /* ================= DELETE ================= */
-// router.delete("/:id", async (req, res) => {
-//   try {
-//     const item = await Gallery.findById(req.params.id);
-//     if (!item) return res.status(404).json({ message: "Not found" });
-
-//     await cloudinary.uploader.destroy(item.public_id, {
-//       resource_type: item.type === "pdf" ? "raw" : item.type,
-//     });
-
-//     await item.deleteOne();
-//     res.json({ message: "Deleted" });
-//   } catch (err) {
-//     res.status(500).json({ message: "Delete failed" });
-//   }
-// });
-
-// module.exports = router;
-
-
-
+//whole code added by Rushikesh
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
+
 const { cloudinary, storage } = require("../cloudinary");
 const Gallery = require("../models/GallerySchema");
 
 const upload = multer({ storage });
-
 /* ================= UPLOAD ================= */
 router.post("/upload", upload.array("files"), async (req, res) => {
   try {
@@ -110,8 +21,8 @@ router.post("/upload", upload.array("files"), async (req, res) => {
         const type = file.mimetype.startsWith("image")
           ? "image"
           : file.mimetype.startsWith("video")
-          ? "video"
-          : "pdf";
+            ? "video"
+            : "pdf";
 
         if (!categories[index]) {
           throw new Error(`Category missing for file ${index + 1}`);
@@ -122,45 +33,99 @@ router.post("/upload", upload.array("files"), async (req, res) => {
           description: descriptions[index] || "",
           category: categories[index],
           type,
-          url: file.path,
-          public_id: file.filename,
+          url: file.path, // cloudinary url
+          public_id: file.filename, // cloudinary public id
         });
-      })
+      }),
     );
 
     res.status(200).json(items);
   } catch (err) {
     console.error("UPLOAD ERROR:", err);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: err.message || "Upload failed" });
   }
 });
 
 /* ================= GET ================= */
 router.get("/", async (req, res) => {
-  const items = await Gallery.find().sort({ createdAt: -1 });
-  res.json(items);
+  try {
+    const items = await Gallery.find().sort({ createdAt: -1 });
+    res.json(items);
+  } catch (err) {
+    console.error("FETCH ERROR:", err);
+    res.status(500).json({ message: "Fetch failed" });
+  }
 });
 
-/* ================= UPDATE ================= */
-router.put("/:id", async (req, res) => {
-  const updated = await Gallery.findByIdAndUpdate(
-    req.params.id,
-    req.body,
-    { new: true }
-  );
-  res.json(updated);
+router.put("/:id", upload.single("file"), async (req, res) => {
+  try {
+    const item = await Gallery.findById(req.params.id);
+    if (!item) return res.status(404).json({ message: "Not found" });
+
+    const updateData = {
+      title: req.body?.title ?? item.title,
+      description: req.body?.description ?? item.description,
+      category: req.body?.category ?? item.category,
+    };
+
+    if (req.file) {
+      // old cloudinary delete
+      if (item.public_id) {
+        await cloudinary.uploader.destroy(item.public_id, {
+          resource_type: item.type === "pdf" ? "raw" : item.type,
+        });
+      }
+
+      updateData.type = req.file.mimetype.startsWith("image")
+        ? "image"
+        : req.file.mimetype.startsWith("video")
+          ? "video"
+          : "pdf";
+
+      updateData.url = req.file.path; // ✅ add this
+      updateData.public_id = req.file.filename; // ✅ add this
+    }
+
+    const updated = await Gallery.findByIdAndUpdate(req.params.id, updateData, {
+      new: true,
+      runValidators: true,
+    });
+
+    res.json(updated);
+  } catch (err) {
+    console.error("UPDATE ERROR:", err);
+    res.status(500).json({ message: err.message || "Update failed" });
+  }
 });
 
-/* ================= DELETE ================= */
 router.delete("/:id", async (req, res) => {
-  const item = await Gallery.findById(req.params.id);
+  try {
+    const item = await Gallery.findById(req.params.id);
 
-  await cloudinary.uploader.destroy(item.public_id, {
-    resource_type: item.type === "pdf" ? "raw" : item.type,
-  });
+    if (!item) {
+      return res.status(404).json({ message: "Item not found" });
+    }
 
-  await item.deleteOne();
-  res.json({ message: "Deleted" });
+    let resourceType = "image";
+
+    if (item.type === "video") {
+      resourceType = "video";
+    } else if (item.type === "pdf") {
+      resourceType = "raw";
+    }
+
+    if (item.public_id) {
+      await cloudinary.uploader.destroy(item.public_id, {
+        resource_type: resourceType,
+      });
+    }
+
+    await Gallery.findByIdAndDelete(req.params.id);
+
+    res.json({ message: "Deleted successfully" });
+  } catch (err) {
+    console.error("DELETE ERROR:", err);
+    res.status(500).json({ message: err.message || "Delete failed" });
+  }
 });
-
 module.exports = router;

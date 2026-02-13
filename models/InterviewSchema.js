@@ -89,7 +89,10 @@ const interviewSchema = new mongoose.Schema(
 
     link: {
       type: String,
-      required: true,
+      required: function () {
+        return this.interviewType === "Online";
+      },
+      trim: true,
     },
 
     status: {

@@ -3,6 +3,7 @@ const Task = require("../models/TaskSchema");
 const Employee = require("../models/User");
 const workloadService = require("../services/workloadService");
 const { getEmployeeWorkloadByRange } = require("../services/workloadService");
+const { getEmployeeWorkloadByWeekRange } = require("../services/workloadService");
 const mongoose = require("mongoose");
 
 // Create Work Log
@@ -439,7 +440,8 @@ exports.getWeeklyWorkload = async (req, res) => {
 
   const { start, end } = getWeekRange(date);
 
-  const data = await getEmployeeWorkloadByRange(start, end, 9 * 5); // 5 working days
+  // const data = await getEmployeeWorkloadByWeekRange(start, end, 9 * 5); // 5 working days
+  const data = await getEmployeeWorkloadByWeekRange(start, end);
 
   res.json({
     week: `${start.toISOString()} - ${end.toISOString()}`,
@@ -464,8 +466,8 @@ exports.getMonthlyWorkload = async (req, res) => {
 
   const { start, end } = getMonthRange(year, month);
 
-  const workingDays = 22; // average
-  const data = await getEmployeeWorkloadByRange(start, end, 9 * workingDays);
+  //  const workingDays = 22; // average
+  const data = await getEmployeeWorkloadByRange(start, end);
 
   res.json({
     month,

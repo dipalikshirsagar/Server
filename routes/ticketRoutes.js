@@ -259,10 +259,21 @@ router.put("/:id", upload.array("attachment", 5), async (req, res) => {
 /* ================= DELETE ================= */
 router.delete("/:id", async (req, res) => {
   try {
-    await Ticket.findByIdAndDelete(req.params.id);
-    res.json({ success: true });
+    const ticketId = req.params.id;
+
+    const ticket = await Ticket.findById(ticketId);
+    if (!ticket) return res.status(404).json({ message: "Ticket not found" });
+
+    // 1️⃣ Delete Ticket
+    await Ticket.findByIdAndDelete(ticketId);
+
+    // 2️⃣ Delete ALL notifications related to this ticket
+    await Notification.deleteMany({ ticketRef: ticketId });
+
+    res.json({ message: "Ticket and notifications deleted" });
   } catch (err) {
-    res.status(500).json({ message: "Failed to delete ticket" });
+    console.error(err);
+    res.status(500).json({ message: "Delete failed" });
   }
 });
 

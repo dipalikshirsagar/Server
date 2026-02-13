@@ -25,7 +25,7 @@ const JobSchema = new mongoose.Schema({
 
   importantSkills: [String],
   dueOn: Date,
-  status: { type: String, enum: ["OnHold", "Active", "Closed"], default: "draft" },
+  status: { type: String, enum: ["OnHold", "Active", "Closed"], default: "Active" },
   createdBy:{ type: mongoose.Schema.Types.ObjectId, ref: "User" },
   
 }, { timestamps: true });
