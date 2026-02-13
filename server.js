@@ -35,7 +35,7 @@ const Resignation = require("./models/ResignationSchema");
 const ticketRoutes = require("./routes/ticketRoutes");
 const { getValidWorkingDays } = require("./services/dateUtils");
 
-const Performance = require("./models/PerformanceSchema"); //added by jayshree
+const Performance = require("./models/performanceSchema"); //added by jayshree
 
 // ✅ Import Cloudinary config (convert import → require)
 const { v2: cloudinary } = require("cloudinary");
