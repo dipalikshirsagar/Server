@@ -1,4 +1,6 @@
 const Job = require("../models/JobSchema");
+const User = require("../models/User");              
+const Notification = require("../models/notificationSchema");
 
 // CREATE JOB Added  by samiksha
 exports.createJob = async (req, res) => {
@@ -41,6 +43,33 @@ exports.createJob = async (req, res) => {
         .json({ error: "Due date must be today or future" });
 
     const job = await Job.create(req.body);
+
+    // added by shivani
+    const notifyUsers = await User.find(
+      { role: { $in: ["employee", "manager", "it"] } },
+      "_id role"
+    );
+    
+    const jobTypeFormatted =
+      job.jobType === "inhouse"
+        ? "Inhouse"
+        : job.jobType === "referral"
+        ? "Referral"
+        : "Job";
+    
+    const notifications = notifyUsers.map((user) => ({
+      user: user._id,
+      type: "Job",
+      message: `New ${jobTypeFormatted} job posted: ${job.jobTitle}`,
+      triggeredByRole: "HR", 
+      jobRef: job._id,
+      isRead: false,
+      createdAt: new Date(),
+    }));
+    
+    await Notification.insertMany(notifications);
+    // 
+
     res.status(201).json(job);
   } catch (err) {
     console.error("Create Job Error:", err);

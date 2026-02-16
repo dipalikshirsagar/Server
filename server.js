@@ -2157,6 +2157,7 @@ app.post("/leave/apply", async (req, res) => {
     // 3️⃣ Notify all admins (optional but kept)
     const admins = await User.find({
       role: { $in: ["admin", "hr", "ceo", "coo", "md"] },
+      _id: { $ne: employeeId },
     });
 
     for (let admin of admins) {
@@ -2254,9 +2255,12 @@ app.get("/leave/manager/:managerId", async (req, res) => {
 // 2. Get My Leaves (Employee)
 app.get("/leave/my/:employeeId", async (req, res) => {
   try {
-    const leaves = await Leave.find({ employee: req.params.employeeId }).populate("approvedBy", "name role").sort({
-      date: -1,
-    });
+    const leaves = await Leave.find({ employee: req.params.employeeId })
+      .populate("approvedBy", "name role")
+      .populate("reportingManager", "name email role")
+      .sort({
+        date: -1,
+      });
     res.json(leaves);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2659,6 +2663,10 @@ app.put("/leave/:leaveId/status", async (req, res) => {
     leave.approvedBy = userId;
     leave.approvedByRole = role;
     await leave.save();
+    await leave.populate([
+      { path: "approvedBy", select: "name email role" },
+      { path: "reportingManager", select: "name email role" },
+    ]);
 
     // 🔔 Notification for employee
     await Notification.create({
@@ -3277,7 +3285,7 @@ app.post("/attendance/regularization/apply", async (req, res) => {
         .json({ error: "Invalid check-in or check-out time" });
     }
     //Added by Jaicy
-   // Validation 1: check-in < check-out
+    // Validation 1: check-in < check-out
     if (checkInDate >= checkOutDate) {
       return res
         .status(400)
@@ -3303,14 +3311,14 @@ app.post("/attendance/regularization/apply", async (req, res) => {
     // }
 
     // Validation 3: Reason ≤ 20 words
-      if (reason) {
-        const wordCount = reason.trim().split(/\s+/).length;
-        if (wordCount > 10) {
-          return res.status(400).json({
-            error: "Reason cannot exceed 20 words",
-          });
-        }
+    if (reason) {
+      const wordCount = reason.trim().split(/\s+/).length;
+      if (wordCount > 10) {
+        return res.status(400).json({
+          error: "Reason cannot exceed 20 words",
+        });
       }
+    }
 
     const employee = await User.findById(employeeId);
     if (!employee) return res.status(404).json({ error: "Employee not found" });
@@ -3720,7 +3728,35 @@ app.get("/events-for-employee", authenticate, async (req, res) => {
     res.status(500).json({ message: "Failed to fetch events." });
   }
 });
+//snehal code edit
+// Admin can update event
+app.put("/events/:id", authenticate, async (req, res) => {
+  try {
+    const { name, date } = req.body;
 
+    const updatedEvent = await Event.findByIdAndUpdate(
+      req.params.id,
+      {
+        name,
+        date,
+      },
+      { new: true }, // return updated document
+    );
+
+    if (!updatedEvent) {
+      return res.status(404).json({ message: "Event not found" });
+    }
+
+    res.json({
+      message: "Event updated successfully",
+      event: updatedEvent,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to update event" });
+  }
+});
+//snehal code edit
 //assign reporting manager
 // GET all users with role 'manager'
 app.get("/managers", async (req, res) => {
@@ -3913,7 +3949,18 @@ app.get("/getHolidays", async (req, res) => {
 app.post("/holidays", async (req, res) => {
   try {
     const { name, date, description } = req.body;
+    //  Check if holiday already exists on same date
+    const existingHoliday = await Holiday.findOne({
+      date: new Date(date),
+    });
+
+    if (existingHoliday) {
+      return res.status(400).json({
+        message: "Holiday already exists on this date.",
+      });
+    }
     console.log(req.body);
+
     const holiday = new Holiday({ name, date, description });
     await holiday.save();
 
@@ -3945,6 +3992,47 @@ app.delete("/holidays/:id", async (req, res) => {
     res.json({ message: "Holiday deleted" });
   } catch (err) {
     res.status(500).json({ error: "Failed to delete holiday" });
+  }
+});
+
+// Update Holiday
+app.put("/holidays/:id", authenticate, async (req, res) => {
+  try {
+    const { name, date } = req.body;
+
+    const updatedHoliday = await Holiday.findByIdAndUpdate(
+      req.params.id,
+      { name, date },
+      { new: true },
+    );
+
+    if (!updatedHoliday) {
+      return res.status(404).json({ message: "Holiday not found" });
+    }
+
+    // Send update notification
+    const users = await User.find({});
+    const role = req.user.role; // from authenticate middleware
+
+    const notifications = users.map((user) => ({
+      user: user._id,
+      type: "Holiday Update",
+      message: `Holiday "${name}" has been updated to ${new Date(
+        date,
+      ).toDateString()}`,
+      holidayRef: updatedHoliday._id,
+      triggeredByRole: role,
+    }));
+
+    await Notification.insertMany(notifications);
+
+    res.json({
+      message: "Holiday updated successfully",
+      holiday: updatedHoliday,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update holiday" });
   }
 });
 
@@ -6618,6 +6706,23 @@ app.post("/policy/create", upload.single("pdf"), async (req, res) => {
     });
 
     const savedPolicy = await policy.save();
+    // added by shivani
+
+    const allowedRoles = ["employee", "IT_Support", "ceo", "md"];
+
+    const users = await User.find({ role: { $in: allowedRoles } }).select("_id");
+
+    //  Create notifications
+    const notifications = users.map((user) => ({
+      user: user._id,
+      type: "Policy",
+      message: `New  policy published: ${title}`,
+      triggeredByRole: "HR",
+      announcementRef: savedPolicy._id, // you can rename to policyRef later
+      isRead: false,
+      createdAt: new Date(),
+    }));
+   await Notification.insertMany(notifications);
 
     res.status(201).json({
       success: true,
@@ -6634,44 +6739,60 @@ app.post("/policy/create", upload.single("pdf"), async (req, res) => {
 });
 
 //Added by Shivani
-app.put("/policy/update/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { title, description, image } = req.body;
+app.put(
+  "/policy/update/:id",
+  upload.single("pdf"), // allow PDF upload
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { title, description } = req.body;
 
-    if (!title || !description) {
-      return res.status(400).json({
+      if (!title || !description) {
+        return res.status(400).json({
+          success: false,
+          message: "Title and description are required",
+        });
+      }
+
+      // ✅ Prepare update object
+      const updateData = {
+        title,
+        description,
+      };
+
+      // ✅ If new file uploaded, update image/pdf
+      if (req.file) {
+        updateData.image = req.file.filename; 
+        // or req.file.path / req.file.secure_url (Cloudinary)
+      }
+
+      const updatedPolicy = await Policy.findByIdAndUpdate(
+        id,
+        updateData,
+        { new: true }
+      );
+
+      if (!updatedPolicy) {
+        return res.status(404).json({
+          success: false,
+          message: "Policy not found",
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Policy updated successfully",
+        data: updatedPolicy,
+      });
+    } catch (error) {
+      res.status(500).json({
         success: false,
-        message: "Title and description are required",
+        message: "Server error",
+        error: error.message,
       });
     }
-
-    const updatedPolicy = await Policy.findByIdAndUpdate(
-      id,
-      { title, description, image },
-      { new: true },
-    );
-
-    if (!updatedPolicy) {
-      return res.status(404).json({
-        success: false,
-        message: "Policy not found",
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: "Policy updated successfully",
-      data: updatedPolicy,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
   }
-});
+);
 
 // DELETE policy
 app.delete("/policy/delete/:id", async (req, res) => {
@@ -8010,45 +8131,54 @@ app.post("/resignation/apply", authenticate, async (req, res) => {
     });
 
     await resignation.save();
-    //Added by Rutuja for notification
+    //Added by shivani
     try {
-      const adminUsers = await User.find({
-        role: { $in: ["hr", "admin", "ceo", "coo", "md"] },
+      let notifyRoles = [];
+      let includeManager = false;
+    
+      //  Case 1: Manager applies resignation
+      if (emp.role === "manager") {
+        notifyRoles = ["hr", "admin"];
+      }
+      //  Case 2: Employee applies resignation
+      else {
+        notifyRoles = ["hr", "admin"];
+        includeManager = true;
+      }
+    
+      // Fetch users by role
+      const notifyUsers = await User.find({
+        role: { $in: notifyRoles },
       });
-
-      const adminNotifications = adminUsers.map((admin) => ({
-        user: admin._id,
+    
+      const notifications = notifyUsers.map((user) => ({
+        user: user._id,
         type: "Resignation",
         message: `${emp.name} (${emp.employeeId}) has applied for resignation.`,
         isRead: false,
         createdAt: new Date(),
         triggeredBy: emp._id,
-        triggeredByRole: emp.role,
+        triggeredByRole:  emp.role.toUpperCase(),
       }));
-
-      let managerNotification = null;
-      if (emp.reportingManager) {
-        managerNotification = {
+    
+      // Notify reporting manager only if employee applies
+      if (includeManager && emp.reportingManager) {
+        notifications.push({
           user: emp.reportingManager,
           type: "Resignation",
           message: `${emp.name} (${emp.employeeId}) has applied for resignation.`,
           isRead: false,
           createdAt: new Date(),
           triggeredBy: emp._id,
-          triggeredByRole: emp.role,
-        };
+          triggeredByRole:  emp.role.toUpperCase(),
+        });
       }
-
-      const notificationsToInsert = [...adminNotifications];
-      if (managerNotification) {
-        notificationsToInsert.push(managerNotification);
-      }
-
-      if (notificationsToInsert.length > 0) {
-        await Notification.insertMany(notificationsToInsert);
+    
+      if (notifications.length > 0) {
+        await Notification.insertMany(notifications);
       }
     } catch (notificationError) {
-      console.error("Notification creation error:", notificationError);
+          console.error("Notification creation error:", notificationError);
     }
 
     res.json({
@@ -8163,23 +8293,25 @@ app.put("/resignation/:resignationId", authenticate, async (req, res) => {
 
     await resignation.populate("approvedBy", "name role");
 
+    // added by shivani 
     if (resignation.employee && resignation.status !== previousStatus) {
       try {
         const employeeNotification = {
-          user: resignation.employee._id,
+          user: resignation.employee._id, // always send to resignation owner
           type: "Resignation",
-          message: `Your resignation ${resignation.status} by ${req.user.role}`,
+          message: `Your resignation has been ${resignation.status} by ${req.user.role}.`,
           isRead: false,
-          createdAt: new Date(),
           triggeredBy: req.user._id,
-          triggeredByRole: req.user.role || "Approver",
+          triggeredByRole: req.user.role.toUpperCase(), // VERY IMPORTANT
         };
-
+    
         await Notification.create(employeeNotification);
       } catch (notificationError) {
         console.error("Notification creation error:", notificationError);
       }
     }
+
+    // 
 
     res.json({
       message: `Resignation ${action}ed successfully`,
@@ -9271,6 +9403,24 @@ app.post("/performance", async (req, res) => {
     });
 
     await performance.save();
+    // added by shivani
+
+    const users = await User.find({ _id: validManagerId }).select("_id");
+
+//  Create notifications
+    const notifications = users.map((user) => ({
+      user: user._id,
+      type: "Performance",
+      message: `New performance request created for ${employeeName}`,
+      triggeredByRole: "HR",
+      announcementRef: performance._id, 
+      isRead: false,
+      createdAt: new Date(),
+    }));
+    //
+
+//  Save notifications
+await Notification.insertMany(notifications);
 
     res.status(201).json({
       success: true,
@@ -9418,6 +9568,28 @@ app.put("/performance/:performanceId", async (req, res) => {
         message: "Performance record not found",
       });
     }
+
+    //added by shivani
+    const allowedRoles = ["admin", "ceo", "coo", "hr"];
+
+      const users = await User.find({ role: { $in: allowedRoles } }).select("_id");
+
+      // Fetch manager name safely
+      const manager = await User.findById(updatedPerformance.managerId).select("name");
+
+      const managerName = manager ? manager.name : "Manager";
+
+      const notifications = users.map((user) => ({
+        user: user._id,
+        type: "Performance",
+        message: `${managerName} updated the performance of ${updatedPerformance.employeeName}`,
+        triggeredByRole:"MANAGER",
+        announcementRef: updatedPerformance._id,
+        isRead: false,
+        createdAt: new Date(),
+      }));
+
+      await Notification.insertMany(notifications);
 
     res.status(200).json({
       message: "Performance updated successfully",
@@ -9601,6 +9773,49 @@ app.post("/performance/:id/approve", authenticate, async (req, res) => {
     performance.approvedAt = new Date();
     await performance.save();
 
+    // added by shivani
+    // Get assigned manager
+      const assignedManager = await User.findById(performance.managerId).select("_id");
+
+      // Get HR users
+      const hrUsers = await User.find({ role: "hr" }).select("_id");
+
+      // Decide who should receive notification
+      let usersToNotify = [];
+
+      // If HR approved → notify only manager
+      if (userRole === "hr") {
+        if (assignedManager) {
+          usersToNotify.push(assignedManager._id);
+        }
+      } 
+      // If Admin / CEO / COO approved → notify HR + Manager
+      else {
+        if (assignedManager) {
+          usersToNotify.push(assignedManager._id);
+        }
+
+        hrUsers.forEach((hr) => {
+          usersToNotify.push(hr._id);
+        });
+      }
+
+      // Remove duplicates
+      const uniqueUsers = [...new Set(usersToNotify.map(String))];
+
+      // Create notifications
+      const notifications = uniqueUsers.map((userId) => ({
+        user: userId,
+        type: "Performance",
+        message: ` ${userRole.toUpperCase()} approved the performance of ${performance.employeeName}`,
+        triggeredByRole: userRole.toUpperCase(),
+        announcementRef: performance._id,
+        isRead: false,
+        createdAt: new Date(),
+      }));
+
+      await Notification.insertMany(notifications);
+
     res.json({
       success: true,
       message: "Performance approved",
@@ -9650,6 +9865,50 @@ app.post("/performance/:id/reject", authenticate, async (req, res) => {
     performance.rejectedBy = userId;
     performance.rejectedAt = new Date();
     await performance.save();
+
+    // added by shivani
+    // Get assigned manager
+        const assignedManager = await User.findById(performance.managerId).select("_id");
+
+        // Get HR users
+        const hrUsers = await User.find({ role: "hr" }).select("_id");
+
+        // Decide who should receive notification
+        let usersToNotify = [];
+
+        // If HR approved → notify only manager
+        if (userRole === "hr") {
+          if (assignedManager) {
+            usersToNotify.push(assignedManager._id);
+          }
+        } 
+        // If Admin / CEO / COO approved → notify HR + Manager
+        else {
+          if (assignedManager) {
+            usersToNotify.push(assignedManager._id);
+          }
+
+          hrUsers.forEach((hr) => {
+            usersToNotify.push(hr._id);
+          });
+        }
+
+        // Remove duplicates
+        const uniqueUsers = [...new Set(usersToNotify.map(String))];
+
+        // Create notifications
+        const notifications = uniqueUsers.map((userId) => ({
+          user: userId,
+          type: "Performance",
+        message: ` ${userRole.toUpperCase()} rejected the performance of ${performance.employeeName}`,
+
+          triggeredByRole: userRole.toUpperCase(),
+          announcementRef: performance._id,
+          isRead: false,
+          createdAt: new Date(),
+        }));
+
+        await Notification.insertMany(notifications);
 
     res.json({
       success: true,

@@ -1,5 +1,7 @@
 const Application = require("../models/ApplicationSchema");
 const Job = require("../models/JobSchema");
+const User = require("../models/User");              
+const Notification = require("../models/notificationSchema");
 
 // CREATE APPLICATION
 exports.createApplication = async (req, res) => {
@@ -58,6 +60,36 @@ exports.createApplication = async (req, res) => {
     };
     
     const app = await Application.create(applicationData );
+    // added by shivani
+    let applicantName;
+
+      if (applicantType === "inhouse") {
+        const employeeUser = await User.findById(employee).select("name");
+        applicantName = employeeUser?.name || "Employee";
+      } else {
+        applicantName = name || "Candidate";
+      }
+
+      // Find HR, Admin, COO, CEO, MD
+      const notifyUsers = await User.find(
+        { role: { $in: ["hr", "admin", "coo", "ceo", "md"] } },
+        "_id"
+      );
+
+      if (notifyUsers.length > 0) {
+        const notifications = notifyUsers.map((user) => ({
+          user: user._id,
+          type: "Job Application",
+          message: `${applicantName} applied for job: ${job.jobTitle}`,
+          triggeredByRole: "EMPLOYEE",
+          jobRef: job._id,
+          isRead: false,
+          createdAt: new Date(),
+        }));
+
+        await Notification.insertMany(notifications);
+      }
+
     res.status(201).json(app);
   } catch (err) {
     res.status(500).json({ error: err.message });

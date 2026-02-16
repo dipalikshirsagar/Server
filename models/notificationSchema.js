@@ -19,7 +19,7 @@ const notificationSchema = new mongoose.Schema(
         "MD",
         "IT_Support",
       ],
-      required: true,
+      // required: true,
     }, //Added by
     interviewRef: { type: mongoose.Schema.Types.ObjectId, ref: "Interview" },
     //   // snehal added 16-01-2026
