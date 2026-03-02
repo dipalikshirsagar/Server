@@ -95,17 +95,23 @@ const interviewSchema = new mongoose.Schema(
       trim: true,
     },
 
-    status: {
+    // status: {
+    //   type: String,
+    //   enum: [
+    //     "Scheduled",
+    //     "On-going",
+    //     "Completed",
+    //     "Cancelled",
+    //     "Not-completed",
+    //   ],
+    //   default: "Scheduled",
+    // },
+    manualStatus: {
       type: String,
-      enum: [
-        "Scheduled",
-        "On-going",
-        "Completed",
-        "Cancelled",
-        "Not-completed",
-      ],
+      enum: ["Cancelled", "Not-completed","Scheduled"],
       default: "Scheduled",
     },
+
   },
   {
     timestamps: true,
@@ -120,5 +126,39 @@ interviewSchema.pre("save", async function (next) {
   }
   next();
 });
+
+interviewSchema.virtual("status").get(function () {
+  const now = new Date();
+
+  // 🔥 Manual override first
+  if (this.manualStatus) return this.manualStatus;
+
+  if (!this.date || !this.startTime || !this.endTime) return "Scheduled";
+
+  // Create datetime objects
+  const startDateTime = new Date(`${this.date}T${this.startTime}`);
+  const endDateTime = new Date(`${this.date}T${this.endTime}`);
+
+  // If now between start and end → ONGOING
+  if (now >= startDateTime && now <= endDateTime) {
+    return "On-going";
+  }
+
+  // If now > end → COMPLETED
+  if (now > endDateTime) {
+    return "Completed";
+  }
+
+  // If future → SCHEDULED
+  if (now < startDateTime) {
+    return "Scheduled";
+  }
+
+  return "Scheduled";
+});
+
+interviewSchema.set("toJSON", { virtuals: true });
+interviewSchema.set("toObject", { virtuals: true });
+
 
 module.exports = mongoose.model("Interview", interviewSchema);

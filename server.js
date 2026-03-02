@@ -34,7 +34,7 @@ const Feedback = require("./models/FeedbackSchema");
 const Resignation = require("./models/ResignationSchema");
 const ticketRoutes = require("./routes/ticketRoutes");
 const { getValidWorkingDays } = require("./services/dateUtils");
-
+const pollRoutes = require("./routes/pollRoutes");
 const Performance = require("./models/performanceSchema"); //added by jayshree
 
 // ✅ Import Cloudinary config (convert import → require)
@@ -76,6 +76,8 @@ const uploadPath = path.join(__dirname, "uploads");
 app.use("/uploads", express.static(uploadPath));
 app.use("/uploads", express.static("uploads"));
 
+
+
 const allowedOrigins = [
   "https://cws-ems-tms.vercel.app",
   "http://localhost:5173",
@@ -106,6 +108,7 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use("/api/teams", teamRoutes);
+app.use("/api/polls", pollRoutes);
 // Serve uploads folder statically
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/api/projects", projectRoutes);
@@ -3636,7 +3639,7 @@ app.post("/addEvent", async (req, res) => {
 
     await event.save();
     // 2️⃣ Fetch all users (employee, manager, hr, admin)
-    const users = await User.find({}); // fetch all users
+   const users = await User.find({ role: { $ne: "admin" } }); // fetch all users
 
     // 3️⃣ Create notifications for all users
     const notifications = users.map((user) => ({
@@ -3965,7 +3968,7 @@ app.post("/holidays", async (req, res) => {
     await holiday.save();
 
     // notification code added by rutuja
-    const users = await User.find({});
+    const users = await User.find({ role: { $ne: "admin" } });
 
     const notifications = users.map((user) => ({
       user: user._id,
@@ -4011,9 +4014,9 @@ app.put("/holidays/:id", authenticate, async (req, res) => {
     }
 
     // Send update notification
-    const users = await User.find({});
+    const users = await User.find({ role: { $ne: "admin" } });
     const role = req.user.role; // from authenticate middleware
-
+    const uppercaseRole = role.toUpperCase();
     const notifications = users.map((user) => ({
       user: user._id,
       type: "Holiday Update",
@@ -4021,7 +4024,7 @@ app.put("/holidays/:id", authenticate, async (req, res) => {
         date,
       ).toDateString()}`,
       holidayRef: updatedHoliday._id,
-      triggeredByRole: role,
+      triggeredByRole: uppercaseRole,
     }));
 
     await Notification.insertMany(notifications);
@@ -6858,24 +6861,28 @@ const canSendMessage = (
   if (sender === "admin") {
     return true;
   }
+  //rutuja
   //  4. NEW: Employee can send to their Manager
-  if (sender === "employee" && receiver === "manager") {
-    return true;
-  }
+  // if (sender === "employee" && receiver === "manager") {
+  //   return true;
+  // }
   //  5. NEW: Manager can send to their direct reports
-  if (
-    sender === "manager" &&
-    receiverReportingManager &&
-    receiverReportingManager.toString() === senderId.toString()
-  ) {
-    return true;
-  }
+  // if (
+  //   sender === "manager" &&
+  //   receiverReportingManager &&
+  //   receiverReportingManager.toString() === senderId.toString()
+  // ) {
+  //   return true;
+  // }
 
   // 3. Employee/Manager can send to HR/Admin
   if (sender === "employee" || sender === "manager") {
     return receiver === "hr" || receiver === "admin";
   }
+
+  return false;
 };
+
 
 app.post("/feedback/send", authenticate, async (req, res) => {
   try {
@@ -6908,14 +6915,22 @@ app.post("/feedback/send", authenticate, async (req, res) => {
         receiver.reportingManager,
       )
     ) {
-      const senderRole = sender.role.toLowerCase();
-      if (senderRole === "employee" || senderRole === "manager") {
+      //rutuja
+      // const senderRole = sender.role.toLowerCase();
+      // if (senderRole === "employee" || senderRole === "manager") {
+      //   return res.status(403).json({
+      //     success: false,
+      //     message:
+      //       "You can only send feedback to HR, your manager, or your direct reports",
+      //   });
+      // } 
+      if (sender.role.toLowerCase() === "employee") {
         return res.status(403).json({
           success: false,
-          message:
-            "You can only send feedback to HR, your manager, or your direct reports",
+          message: "Employees can only send feedback to HR",
         });
-      } else {
+      }
+      else {
         return res.status(403).json({
           success: false,
           message: "You are not allowed to send feedback",
@@ -6986,6 +7001,7 @@ app.post("/feedback/send", authenticate, async (req, res) => {
     });
   }
 });
+
 
 app.get("/feedback/employee/:id", authenticate, async (req, res) => {
   try {
@@ -8537,9 +8553,10 @@ app.post(
         interviewerId: new mongoose.Types.ObjectId(req.body.interviewerId),
         interviewerName: req.body.interviewerName,
         link: req.body.interviewType === "Online" ? req.body.link : "",
-        status: req.body.status,
+        manualStatus: null,
         comment: req.body.comment || "",
-        resumeUrl: req.file ? `/uploads/${req.file.filename}` : null,
+        // resumeUrl: req.file ? `/uploads/${req.file.filename}` : null,
+        resumeUrl: req.file ? req.file.path : null,
       };
       if (interviewData.interviewType === "Online" && !interviewData.link) {
         return res.status(400).json({
@@ -8547,6 +8564,8 @@ app.post(
           message: "Interview link is required for online interviews",
         });
       }
+      console.log("FILE DATA:", req.file);
+
       // 🔐 BACKEND SAFETY VALIDATION
       const start = new Date(`1970-01-01T${interviewData.startTime}`);
       const end = new Date(`1970-01-01T${interviewData.endTime}`);
@@ -8568,7 +8587,7 @@ app.post(
         type: "Interview",
         message: `New interview scheduled for ${interview.candidateName} on ${interview.date}`,
         interviewRef: interview._id,
-        triggeredByRole: req.user.role,
+        triggeredByRole: req.user.role.toUpperCase(),
       });
 
       res.status(201).json({
@@ -8608,10 +8627,11 @@ app.get("/interviews", async (req, res) => {
 // get Schedule Interview API for Employee Role
 app.get("/interviews/employee/:employeeId", authenticate, async (req, res) => {
   try {
-    if (req.user.role !== "employee") {
-      return res.status(403).json({ message: "Forbidden: employees only" });
+    //jaicy
+    console.log(req.user.role);
+    if (req.user.role !== "employee" && req.user.role !== "IT_Support") {
+     return res.status(403).json({ message: "Forbidden: employees only" });
     }
-
     const { employeeId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(employeeId)) {
@@ -8636,6 +8656,7 @@ app.get("/interviews/employee/:employeeId", authenticate, async (req, res) => {
         link: 1,
         status: 1,
         comment: 1,
+        manualStatus: 1
       },
     ).sort({ date: 1 });
 
@@ -8680,6 +8701,7 @@ app.get("/interviews/manager/:managerId", authenticate, async (req, res) => {
         link: 1,
         status: 1,
         comment: 1,
+        manualStatus: 1
       },
     ).sort({ date: 1 });
 
@@ -8704,7 +8726,7 @@ app.delete("/interviewsDelete/:id", async (req, res) => {
       });
     }
 
-    // ❌ ON-GOING interview delete nahi hoga
+    //❌ ON-GOING interview delete nahi hoga
     if (interview.status === "On-going") {
       return res.status(400).json({
         success: false,
@@ -8727,8 +8749,6 @@ app.delete("/interviewsDelete/:id", async (req, res) => {
   }
 });
 
-//  UPDATE Action Button for Scheduled Interview: 12th jan
-//const upload = require("../middleware/resumeUpload"); // ya jahan tumhara multer middleware hai
 
 app.put(
   "/interviewsUpdate/:id",
@@ -8750,12 +8770,18 @@ app.put(
       }
 
       // ❌ ON-GOING interview update nahi hoga
-      if (interview.status === "On-going") {
-        return res.status(400).json({
-          success: false,
-          message: "On-going interview cannot be updated",
-        });
-      }
+      // if (interview.status === "On-going") {
+      //   return res.status(400).json({
+      //     success: false,
+      //     message: "On-going interview cannot be updated",
+      //   });
+      // }
+       const manualStatus =
+          req.body.manualStatus === "null" ||
+          req.body.manualStatus === "" ||
+          req.body.manualStatus === undefined
+            ? null
+            : req.body.manualStatus;
       // Update text fields
       if (req.body.candidateName)
         interview.candidateName = req.body.candidateName;
@@ -8772,12 +8798,20 @@ app.put(
       if (req.body.interviewerName)
         interview.interviewerName = req.body.interviewerName;
       if (req.body.link) interview.link = req.body.link;
-      if (req.body.status) interview.status = req.body.status;
+      //===== HR STATUS UPDATE (NEW)
+      if (manualStatus) {
+        interview.manualStatus = manualStatus; 
+        // Only Cancelled / Not-completed allowed by schema
+      }
       if (req.body.comment) interview.comment = req.body.comment;
       // 🔥 Update resume only if a new file is uploaded
+      // if (req.file) {
+      //   interview.resumeUrl = `/uploads/${req.file.filename}`;
+      // }
       if (req.file) {
-        interview.resumeUrl = `/uploads/${req.file.filename}`;
+        interview.resumeUrl = req.file.path;
       }
+
       if (interview.interviewType === "Online") {
         if (!req.body.link && !interview.link) {
           return res.status(400).json({
@@ -8802,6 +8836,24 @@ app.put(
           });
         }
       }
+      if (req.body.date) {
+  const oldDate = new Date(interview.date);
+  const newDate = new Date(req.body.date);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // 🔥 Condition:
+  // newDate >= today
+  // AND newDate <= oldDate
+  if (
+    newDate >= today &&
+    newDate <= oldDate &&
+    interview.manualStatus === "Not-completed"&&manualStatus!=="Cancelled"&&manualStatus!=="Not-completed"
+  ) {
+    interview.manualStatus = null;
+  }
+}
 
       await interview.save();
 
@@ -8815,7 +8867,7 @@ app.put(
           type: "Interview",
           message: `You have been assigned a new interview for ${interview.candidateName} on ${new Date(interview.date).toLocaleDateString()}`,
           interviewRef: interview._id,
-          triggeredByRole: req.user.role,
+          triggeredByRole: req.user.role.toUpperCase(),
         });
       }
 
@@ -8834,6 +8886,54 @@ app.put(
 );
 
 // UPDATE interview status & comment (EMPLOYEE)
+// app.put("/interviews/employee/:interviewId", authenticate, async (req, res) => {
+//   try {
+//     // 🔐 ROLE CHECK
+//     if (req.user.role !== "employee") {
+//       return res.status(403).json({ message: "Access denied" });
+//     }
+
+//     const { interviewId } = req.params;
+//     const { status, comment } = req.body;
+
+//     // ✅ ID VALIDATION
+//     if (!mongoose.Types.ObjectId.isValid(interviewId)) {
+//       return res.status(400).json({ message: "Invalid interviewId" });
+//     }
+
+//     // 🔍 FIND INTERVIEW FIRST
+//     const interview = await Interview.findById(interviewId);
+
+//     if (!interview) {
+//       return res.status(404).json({ message: "Interview not found" });
+//     }
+
+//     if (interview.status === "On-going") {
+//       return res.status(400).json({
+//         message: "On-going interview cannot be updated",
+//       });
+//     }
+//     // ✅ ONLY ALLOWED FIELDS
+//     const updateData = {};
+//     if (status) updateData.status = status;
+//     if (comment !== undefined) updateData.comment = comment;
+
+//     // 🔥 UPDATE
+//     const updatedInterview = await Interview.findByIdAndUpdate(
+//       interviewId,
+//       updateData,
+//       { new: true },
+//     );
+
+//     res.status(200).json({
+//       message: "Interview updated successfully",
+//       data: updatedInterview,
+//     });
+//   } catch (error) {
+//     console.error("Employee interview update error:", error);
+//     res.status(500).json({ message: "Server error" });
+//   }
+// });
 app.put("/interviews/employee/:interviewId", authenticate, async (req, res) => {
   try {
     // 🔐 ROLE CHECK
@@ -8842,50 +8942,59 @@ app.put("/interviews/employee/:interviewId", authenticate, async (req, res) => {
     }
 
     const { interviewId } = req.params;
-    const { status, comment } = req.body;
+    const { manualStatus, comment } = req.body;
 
     // ✅ ID VALIDATION
     if (!mongoose.Types.ObjectId.isValid(interviewId)) {
       return res.status(400).json({ message: "Invalid interviewId" });
     }
 
-    // 🔍 FIND INTERVIEW FIRST
+    // 🔍 FIND INTERVIEW
     const interview = await Interview.findById(interviewId);
 
     if (!interview) {
       return res.status(404).json({ message: "Interview not found" });
     }
 
+    // ❌ BLOCK ON-GOING UPDATE (Virtual Status Check)
     if (interview.status === "On-going") {
       return res.status(400).json({
         message: "On-going interview cannot be updated",
       });
     }
-    // ✅ ONLY ALLOWED FIELDS
-    const updateData = {};
-    if (status) updateData.status = status;
-    if (comment !== undefined) updateData.comment = comment;
+    const newManualStatus =
+      manualStatus === "" ||
+      manualStatus === undefined ||
+      manualStatus === null
+       ? null
+       : manualStatus;
 
-    // 🔥 UPDATE
-    const updatedInterview = await Interview.findByIdAndUpdate(
-      interviewId,
-      updateData,
-      { new: true },
-    );
+
+    // ✅ Manual Status Update (Only allowed enum values from schema)
+      interview.manualStatus = newManualStatus;
+    
+
+    // ✅ Comment Update
+    if (comment !== undefined) {
+      interview.comment = comment;
+    }
+
+    await interview.save();
 
     res.status(200).json({
       message: "Interview updated successfully",
-      data: updatedInterview,
+      data: interview,
     });
+
   } catch (error) {
     console.error("Employee interview update error:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
 
+
 // UPDATE interview status & comment (MANAGER)
-app.put(
-  "/interviews/managerUpdate/:interviewId",
+app.put("/interviews/managerUpdate/:interviewId",
   authenticate,
   async (req, res) => {
     try {
@@ -8895,30 +9004,43 @@ app.put(
       }
 
       const { interviewId } = req.params;
-      const { status, comment } = req.body;
+      const { manualStatus, comment } = req.body;
 
       // ✅ ID VALIDATION
       if (!mongoose.Types.ObjectId.isValid(interviewId)) {
         return res.status(400).json({ message: "Invalid interviewId" });
       }
 
-      // 🔍 FIND INTERVIEW FIRST
+      // 🔍 FIND INTERVIEW
       const interview = await Interview.findById(interviewId);
 
       if (!interview) {
         return res.status(404).json({ message: "Interview not found" });
       }
 
-      // ❌ BLOCK ON-GOING UPDATE
+      // ❌ BLOCK ON-GOING UPDATE (Virtual Status Check)
       if (interview.status === "On-going") {
         return res.status(400).json({
           message: "On-going interview cannot be updated",
         });
       }
 
-      // ✅ ONLY ALLOWED FIELDS
-      if (status) interview.status = status;
-      if (comment !== undefined) interview.comment = comment;
+      // ✅ Manual Status Update
+      const newManualStatus =
+      manualStatus === "" ||
+      manualStatus === undefined ||
+      manualStatus === null
+       ? null
+       : manualStatus;
+
+
+    // ✅ Manual Status Update (Only allowed enum values from schema)
+      interview.manualStatus = newManualStatus;
+
+      // ✅ Comment Update
+      if (comment !== undefined) {
+        interview.comment = comment;
+      }
 
       await interview.save();
 
@@ -8926,392 +9048,18 @@ app.put(
         message: "Interview updated successfully",
         data: interview,
       });
+
     } catch (error) {
       console.error("Manager interview update error:", error);
       res.status(500).json({ message: "Server error" });
     }
-  },
+  }
 );
+
+
 
 // jayshree interview end
-// ================= HR CREATE SCHEDULE INTERVIEW (Jayashree 6th jan)=================
 
-app.post(
-  "/schedule-interview",
-  resumeUpload.single("resume"), // ✅ multer middleware
-  async (req, res) => {
-    console.log("FILE 👉", req.file); // 🔥 MUST PRINT
-    try {
-      const interviewData = {
-        candidateName: req.body.candidateName,
-        email: req.body.email,
-        role: req.body.role,
-        date: req.body.date,
-        startTime: req.body.startTime,
-        endTime: req.body.endTime,
-        duration: req.body.duration,
-        interviewType: req.body.interviewType,
-        interviewerId: new mongoose.Types.ObjectId(req.body.interviewerId), // ✅ FIX
-        interviewerName: req.body.interviewerName,
-        link: req.body.link,
-        status: req.body.status,
-        comment: req.body.comment || "",
-        resumeUrl: req.file ? `/uploads/${req.file.filename}` : null,
-      };
-
-      // 🔐 BACKEND SAFETY VALIDATION
-      const start = new Date(`1970-01-01T${interviewData.startTime}`);
-      const end = new Date(`1970-01-01T${interviewData.endTime}`);
-
-      if (end <= start) {
-        return res.status(400).json({
-          success: false,
-          message: "End time must be after start time",
-        });
-      }
-      // ✅ ADD THIS LINE (VERY IMPORTANT)
-      // interviewData.interviewer = interviewData.employeeId;
-      const interview = new Interview(interviewData);
-      await interview.save();
-
-      // 🔔 CREATE NOTIFICATION (MANAGER / EMPLOYEE)
-      await Notification.create({
-        user: interview.interviewerId, // 👈 SAME ID
-        type: "Interview",
-        message: `New interview scheduled for ${interview.candidateName} on ${interview.date}`,
-        interviewRef: interview._id,
-      });
-
-      res.status(201).json({
-        success: true,
-        message: "Interview scheduled successfully",
-        interview,
-      });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({
-        success: false,
-        message: "Failed to schedule interview",
-        error: err.message,
-      });
-    }
-  },
-);
-
-// ================= GET ALL INTERVIEWS =================
-app.get("/interviews", async (req, res) => {
-  try {
-    const interviews = await Interview.find().sort({ createdAt: -1 });
-
-    res.json({
-      success: true,
-      interviews,
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch interviews",
-    });
-  }
-});
-
-// get Schedule Interview API for Employee Role
-app.get("/interviews/employee/:employeeId", async (req, res) => {
-  try {
-    if (!req.headers.role || req.headers.role !== "employee") {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
-    const { employeeId } = req.params;
-
-    if (!mongoose.Types.ObjectId.isValid(employeeId)) {
-      return res.status(400).json({ message: "Invalid employeeId" });
-    }
-
-    const interviews = await Interview.find(
-      { interviewerId: employeeId }, // 🔥 CORE MATCH
-      {
-        interviewId: 1,
-        candidateName: 1,
-        email: 1,
-        role: 1,
-        resumeUrl: 1,
-        date: 1,
-        startTime: 1,
-        endTime: 1,
-        duration: 1,
-        interviewType: 1,
-        interviewerId: 1,
-        interviewerName: 1,
-        link: 1,
-        status: 1,
-        comment: 1,
-      },
-    ).sort({ date: 1 });
-
-    res.status(200).json(interviews);
-  } catch (error) {
-    console.error("Employee interview fetch error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-// get Schedule Interview API for Manager Role
-app.get("/interviews/manager/:managerId", async (req, res) => {
-  try {
-    // 🔐 ROLE CHECK
-    if (!req.headers.role || req.headers.role !== "manager") {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
-    // ✅ SAME STYLE AS EMPLOYEE
-    const { managerId } = req.params;
-
-    // 🛡️ ObjectId validation
-    if (!mongoose.Types.ObjectId.isValid(managerId)) {
-      return res.status(400).json({ message: "Invalid managerId" });
-    }
-
-    // 🔥 INTERVIEWSID HI USE KARNA HAI
-    const interviews = await Interview.find(
-      { interviewerId: managerId }, // 🔥 SAME CORE LOGIC
-      {
-        interviewId: 1,
-        candidateName: 1,
-        email: 1,
-        role: 1,
-        resumeUrl: 1,
-        date: 1,
-        startTime: 1,
-        endTime: 1,
-        duration: 1,
-        interviewType: 1,
-        interviewerId: 1,
-        interviewerName: 1,
-        link: 1,
-        status: 1,
-        comment: 1,
-      },
-    ).sort({ date: 1 });
-
-    res.status(200).json(interviews);
-  } catch (error) {
-    console.error("Manager interview fetch error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-// DELETE interview 10th jan
-app.delete("/interviewsDelete/:id", async (req, res) => {
-  console.log("DELETE HIT", req.params.id);
-  try {
-    const { id } = req.params;
-
-    const interview = await Interview.findById(id);
-    if (!interview) {
-      return res.status(404).json({
-        success: false,
-        message: "Interview not found",
-      });
-    }
-
-    // ❌ ON-GOING interview delete nahi hoga
-    if (interview.status === "On-going") {
-      return res.status(400).json({
-        success: false,
-        message: "On-going interview cannot be deleted",
-      });
-    }
-
-    await Interview.findByIdAndDelete(id);
-
-    res.json({
-      success: true,
-      message: "Interview deleted successfully",
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      success: false,
-      message: "Failed to delete interview",
-    });
-  }
-});
-
-//  UPDATE Action Button for Scheduled Interview: 12th jan
-//const upload = require("../middleware/resumeUpload"); // ya jahan tumhara multer middleware hai
-
-app.put(
-  "/interviewsUpdate/:id",
-  resumeUpload.single("resume"),
-  async (req, res) => {
-    console.log("PUT HIT", req.params.id);
-    console.log("BODY:", req.body);
-    try {
-      const { id } = req.params;
-
-      const interview = await Interview.findById(id);
-      const oldInterviewerId = interview.interviewerId?.toString();
-      if (!interview) {
-        return res.status(404).json({
-          success: false,
-          message: "Interview not found",
-        });
-      }
-
-      // ❌ ON-GOING interview update nahi hoga
-      if (interview.status === "On-going") {
-        return res.status(400).json({
-          success: false,
-          message: "On-going interview cannot be updated",
-        });
-      }
-      // Update text fields
-      if (req.body.candidateName)
-        interview.candidateName = req.body.candidateName;
-      if (req.body.email) interview.email = req.body.email;
-      if (req.body.role) interview.role = req.body.role;
-      if (req.body.date) interview.date = req.body.date;
-      if (req.body.startTime) interview.startTime = req.body.startTime;
-      if (req.body.endTime) interview.endTime = req.body.endTime;
-      if (req.body.duration) interview.duration = req.body.duration;
-      if (req.body.interviewType)
-        interview.interviewType = req.body.interviewType;
-      if (req.body.interviewerId)
-        interview.interviewerId = req.body.interviewerId;
-      if (req.body.interviewerName)
-        interview.interviewerName = req.body.interviewerName;
-      if (req.body.link) interview.link = req.body.link;
-      if (req.body.status) interview.status = req.body.status;
-      if (req.body.comment) interview.comment = req.body.comment;
-      // 🔥 Update resume only if a new file is uploaded
-      if (req.file) {
-        interview.resumeUrl = `/uploads/${req.file.filename}`;
-      }
-
-      await interview.save();
-
-      // 🔔 INTERVIEWER CHANGE NOTIFICATION
-      if (
-        req.body.interviewerId &&
-        req.body.interviewerId !== oldInterviewerId
-      ) {
-        await Notification.create({
-          user: req.body.interviewerId, // new interviewer
-          type: "Interview",
-          message: `You have been assigned a new interview for ${interview.candidateName} on ${new Date(interview.date).toLocaleDateString()}`,
-          interviewRef: interview._id,
-        });
-      }
-
-      res.json({
-        success: true,
-        message: "Interview updated successfully",
-        data: interview,
-      });
-    } catch (err) {
-      console.error(err);
-      res
-        .status(500)
-        .json({ success: false, message: "Failed to update interview" });
-    }
-  },
-);
-
-// UPDATE interview status & comment (EMPLOYEE)
-app.put("/interviews/employee/:interviewId", async (req, res) => {
-  try {
-    // 🔐 ROLE CHECK
-    if (!req.headers.role || req.headers.role !== "employee") {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
-    const { interviewId } = req.params;
-    const { status, comment } = req.body;
-
-    // ✅ ID VALIDATION
-    if (!mongoose.Types.ObjectId.isValid(interviewId)) {
-      return res.status(400).json({ message: "Invalid interviewId" });
-    }
-
-    // ✅ ONLY ALLOWED FIELDS
-    const updateData = {};
-    if (status) updateData.status = status;
-    if (comment !== undefined) updateData.comment = comment;
-
-    // 🔥 UPDATE
-    const updatedInterview = await Interview.findByIdAndUpdate(
-      interviewId,
-      updateData,
-      { new: true },
-    );
-
-    if (!updatedInterview) {
-      return res.status(404).json({ message: "Interview not found" });
-    }
-
-    if (updatedInterview.status === "On-going") {
-      return res.status(400).json({
-        message: "On-going interview cannot be updated",
-      });
-    }
-
-    res.status(200).json({
-      message: "Interview updated successfully",
-      data: updatedInterview,
-    });
-  } catch (error) {
-    console.error("Employee interview update error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-// UPDATE interview status & comment (MANAGER)
-app.put("/interviews/managerUpdate/:interviewId", async (req, res) => {
-  try {
-    // 🔐 ROLE CHECK
-    if (!req.headers.role || req.headers.role !== "manager") {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
-    const { interviewId } = req.params;
-    const { status, comment } = req.body;
-
-    // ✅ ID VALIDATION
-    if (!mongoose.Types.ObjectId.isValid(interviewId)) {
-      return res.status(400).json({ message: "Invalid interviewId" });
-    }
-
-    // 🔍 FIND INTERVIEW FIRST
-    const interview = await Interview.findById(interviewId);
-
-    if (!interview) {
-      return res.status(404).json({ message: "Interview not found" });
-    }
-
-    // ❌ BLOCK ON-GOING UPDATE
-    if (interview.status === "On-going") {
-      return res.status(400).json({
-        message: "On-going interview cannot be updated",
-      });
-    }
-
-    // ✅ ONLY ALLOWED FIELDS
-    if (status) interview.status = status;
-    if (comment !== undefined) interview.comment = comment;
-
-    await interview.save();
-
-    res.status(200).json({
-      message: "Interview updated successfully",
-      data: interview,
-    });
-  } catch (error) {
-    console.error("Manager interview update error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-});
 
 //Performance API Added by Jayshree
 // Crete Performnace at HR (jayu 19th jan)

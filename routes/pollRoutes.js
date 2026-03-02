@@ -1,12 +1,23 @@
 const express = require("express");
 const router = express.Router();
-const pollController = require("../controller/pollController");
 
-router.post("/", pollController.createPoll);
-router.get("/", pollController.getAllPolls);
-router.get("/:pollId", pollController.getPollById);
-router.put("/:pollId", pollController.updatePoll);
-router.delete("/:pollId", pollController.deletePoll);
-router.post("/:pollId/vote", pollController.votePoll);
+const {
+  createPoll,
+  getActivePoll,
+  getPreviousPolls,
+  votePoll,
+  getPollVotedMembers, 
+  deletePoll, 
+  editPoll  
+} = require("../controller/pollController");
+
+
+router.post("/create", createPoll);  
+router.get("/active", getActivePoll);
+router.get("/previous", getPreviousPolls);
+router.post("/vote", votePoll);
+router.get("/:pollId/voted-members", getPollVotedMembers);
+router.delete("/:pollId", deletePoll);
+router.put("/:pollId", editPoll);//rutuja
 
 module.exports = router;

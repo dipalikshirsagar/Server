@@ -33,6 +33,10 @@ const notificationSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Announcement",
     }, //added by rutuja
+    pollRef: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: "Poll" 
+    },//rutuja
     holidayRef: { type: mongoose.Schema.Types.ObjectId, ref: "Holiday" }, //added by rutuja
     eventRef: { type: mongoose.Schema.Types.ObjectId, ref: "Event" },
 

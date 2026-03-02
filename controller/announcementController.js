@@ -48,7 +48,7 @@ exports.createAnnouncement = async (req, res) => {
       isActive: isActive || false,
     });
 
-    const users = await User.find({}, "_id");
+    const users = await User.find({ role: { $ne: "admin" } }, "_id");
 
     // 3️⃣ Create notifications for all users
     //added by shivani
